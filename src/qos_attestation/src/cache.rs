@@ -1097,7 +1097,10 @@ mod tests {
 		assert_eq!(running.cache.valid_for(), LIFETIME + LEAD);
 		let requests = nsm.requests.lock().unwrap();
 		assert_eq!(requests.len(), 2);
-		let expected_key = sample_inputs(8).ephemeral_public_key.to_bytes();
+		let expected_key = sample_inputs(8)
+			.ephemeral_public_key
+			.attestation_binding()
+			.to_vec();
 		for request in requests.iter() {
 			assert!(matches!(request, NsmRequest::Attestation {
 			user_data: Some(hash), public_key: Some(key), nonce: None,

@@ -17,7 +17,7 @@ workspace = true
 qos_core = { workspace = true, default-features = false }
 qos_crypto = { workspace = true, default-features = false }
 qos_hex = { workspace = true }
-qos_p256 = { workspace = true }
+qos_hybrid = { workspace = true }
 qos_nsm = { workspace = true, default-features = false }
 qos_json = { workspace = true }
 
@@ -25,26 +25,18 @@ qos_json = { workspace = true }
 ureq = { workspace = true }
 aws-nitro-enclaves-nsm-api = { workspace = true }
 borsh = { workspace = true}
-p256 = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
 rand_core = { workspace = true, features = ["os_rng"] }
 zeroize = { workspace = true, features = ["alloc"] }
-rpassword = { workspace = true }
 serde_json = { workspace = true }
-
-der = { workspace = true, optional = true }
-x509-cert = { workspace = true, optional = true }
-yubikey = { workspace = true, optional = true }
 
 [dev-dependencies]
 # We need mock enabled to grab things related to the mock NSM.
 qos_core = { workspace = true, features = ["mock"], default-features = false }
 lazy_static = { workspace = true }
 qos_test_primitives = { path = "../qos_test_primitives", package = "umbra_qos_test_primitives" }
-qos_p256 = { workspace = true, features = ["mock"] }
-
-[features]
-default = ["smartcard"]
-smartcard = ["der", "x509-cert", "yubikey"]
+qos_hybrid = { workspace = true, features = ["mock"] }
 
 [lib]
 name = "qos_client"

@@ -24,7 +24,7 @@ qos_host = { workspace = true, default-features = false }
 qos_net = { workspace = true, features = ["proxy" ], default-features = false }
 qos_crypto = { workspace = true }
 qos_hex = { workspace = true }
-qos_p256 = { workspace = true, features = ["mock"] }
+qos_hybrid = { workspace = true, features = ["mock"] }
 qos_test_primitives = { workspace = true }
 zeroize = { workspace = true }
 

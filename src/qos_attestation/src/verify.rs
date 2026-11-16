@@ -2,12 +2,12 @@
 //! caller-supplied expected boot inputs.
 
 use aws_nitro_enclaves_nsm_api::api::AttestationDoc;
+use qos_hybrid::HybridPublic;
 use qos_nsm::{
 	NsmProvider,
 	nitro::{self, ManifestAttestationInput, attestation_doc_from_der},
 	types::{NsmRequest, NsmResponse},
 };
-use qos_p256::P256Public;
 use x509_cert::{Certificate, der::Decode};
 
 use crate::{AttestationInputs, Error};
@@ -137,7 +137,8 @@ impl VerifiedAttestationDocument {
 /// ```
 pub trait NsmProviderExt: NsmProvider {
 	/// Request unverified COSE bytes with `manifest_hash` as `user_data`, the
-	/// supplied `public_key`, and no nonce. Blocks on one NSM request.
+	/// attestation binding of the supplied `public_key`, and no nonce. Blocks on
+	/// one NSM request.
 	///
 	/// # Errors
 	///
@@ -145,12 +146,12 @@ pub trait NsmProviderExt: NsmProvider {
 	fn request_attestation_doc(
 		&self,
 		manifest_hash: &[u8; 32],
-		public_key: &P256Public,
+		public_key: &HybridPublic,
 	) -> Result<Vec<u8>, Error> {
 		let request = NsmRequest::Attestation {
 			user_data: Some(manifest_hash.to_vec()),
 			nonce: None,
-			public_key: Some(public_key.to_bytes()),
+			public_key: Some(public_key.attestation_binding().to_vec()),
 		};
 		match self.nsm_process_request(request) {
 			NsmResponse::Attestation { document } => Ok(document),
@@ -295,7 +296,11 @@ pub(crate) fn check_binding(
 	// Also require that key to match the caller's expected public key.
 	match doc.public_key.as_ref() {
 		Some(pub_key)
-			if pub_key.as_slice() == inputs.ephemeral_public_key.to_bytes() => {}
+			if pub_key.as_slice()
+				== inputs
+					.ephemeral_public_key
+					.attestation_binding()
+					.as_slice() => {}
 		_ => return Err(Error::PublicKeyMismatch),
 	}
 
@@ -624,7 +629,10 @@ mod tests {
 		// Changing only the document's public key leaves PCR17 committed to
 		// the original key, so the commitment check fails first.
 		doc.public_key = Some(ByteBuf::from(
-			sample_inputs(2).ephemeral_public_key.to_bytes(),
+			sample_inputs(2)
+				.ephemeral_public_key
+				.attestation_binding()
+				.to_vec(),
 		));
 		assert!(matches!(check_binding(&doc, &inputs), Err(Error::Binding(_))));
 
@@ -671,7 +679,7 @@ mod tests {
 		let commitment =
 			nitro::expected_manifest_commitment_pcr::<nitro::Setup>(
 				&inputs.manifest_hash,
-				&inputs.ephemeral_public_key.to_bytes(),
+				&inputs.ephemeral_public_key.attestation_binding(),
 			)
 			.unwrap();
 		setup.pcrs.insert(16, ByteBuf::from(commitment.to_vec()));

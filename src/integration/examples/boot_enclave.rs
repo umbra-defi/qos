@@ -19,7 +19,7 @@ use qos_core::protocol::{
 };
 use qos_crypto::sha_256;
 use qos_host::EnclaveInfo;
-use qos_p256::P256Pair;
+use qos_hybrid::HybridPair;
 use qos_test_primitives::PathWrapper;
 
 #[tokio::main]
@@ -252,13 +252,18 @@ async fn main() {
 		// Read in the generated approval to check it was created correctly
 		let approval: Approval =
 			serde_json::from_slice(&fs::read(approval_path).unwrap()).unwrap();
-		let personal_pair = P256Pair::from_hex_file(
+		let personal_pair = HybridPair::from_hex_file(
 			personal_dir(alias).join(format!("{alias}.secret")),
 		)
 		.unwrap();
 
-		let signature = personal_pair.sign(&manifest.manifest_hash()).unwrap();
-		assert_eq!(approval.signature, signature);
+		assert!(
+			personal_pair
+				.public_key()
+				.verify(&manifest.manifest_hash(), &approval.signature)
+				.is_ok(),
+			"the approval must be this member signing the manifest hash"
+		);
 
 		assert_eq!(approval.member.alias, alias);
 		assert_eq!(

@@ -51,13 +51,13 @@ mod tests {
 		Signature, SigningKey,
 		signature::hazmat::{PrehashSigner, PrehashVerifier},
 	};
+	use qos_hybrid::HybridPair;
 	use qos_nsm::{
 		NsmProvider,
 		mock::MockNsm,
 		nitro::{self, AttestError},
 		types::{NsmRequest, NsmResponse},
 	};
-	use qos_p256::P256Pair;
 	use serde_bytes::ByteBuf;
 
 	use crate::AttestationInputs;
@@ -66,7 +66,7 @@ mod tests {
 	pub(crate) fn sample_inputs(n: u8) -> AttestationInputs {
 		let pcr = |i: u8| vec![n.wrapping_mul(4).wrapping_add(i); 48];
 		AttestationInputs {
-			ephemeral_public_key: P256Pair::from_master_seed(&[n; 32].into())
+			ephemeral_public_key: HybridPair::from_master_seed(&[n; 32].into())
 				.unwrap()
 				.public_key(),
 			manifest_hash: [n; 32],
@@ -80,7 +80,7 @@ mod tests {
 	fn live_commitment(inputs: &AttestationInputs) -> Vec<u8> {
 		nitro::expected_manifest_commitment_pcr::<nitro::Live>(
 			&inputs.manifest_hash,
-			&inputs.ephemeral_public_key.to_bytes(),
+			&inputs.ephemeral_public_key.attestation_binding(),
 		)
 		.unwrap()
 		.to_vec()
@@ -138,7 +138,7 @@ mod tests {
 			certificate: ByteBuf::new(),
 			cabundle: vec![],
 			public_key: Some(ByteBuf::from(
-				inputs.ephemeral_public_key.to_bytes(),
+				inputs.ephemeral_public_key.attestation_binding().to_vec(),
 			)),
 			user_data: Some(ByteBuf::from(inputs.manifest_hash.to_vec())),
 			nonce: None,

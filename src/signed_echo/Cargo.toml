@@ -16,7 +16,7 @@ qos_core = { workspace = true }
 qos_hex = { workspace = true }
 qos_json = { workspace = true }
 qos_nsm = { workspace = true }
-qos_p256 = { workspace = true }
+qos_hybrid = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }

@@ -3,13 +3,14 @@
 use std::fmt;
 
 use qos_core::protocol::services::boot::VersionedManifestEnvelope;
-use qos_p256::P256Public;
+use qos_hybrid::HybridPublic;
 
 /// What an attestation document must bind to.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AttestationInputs {
-	/// The expected live ephemeral public key for signing and encryption.
-	pub ephemeral_public_key: P256Public,
+	/// The expected live ephemeral public key for signing and encryption. The
+	/// document binds it by its attestation binding, not its bytes.
+	pub ephemeral_public_key: HybridPublic,
 	/// The manifest hash, attested in `user_data`.
 	pub manifest_hash: [u8; 32],
 	/// Expected PCR0, from the manifest.
@@ -43,7 +44,7 @@ impl AttestationInputs {
 	/// Supports v0, v1 and v2 manifests.
 	#[must_use]
 	pub fn new(
-		ephemeral_public_key: P256Public,
+		ephemeral_public_key: HybridPublic,
 		envelope: &VersionedManifestEnvelope,
 	) -> Self {
 		let enclave = envelope.enclave();

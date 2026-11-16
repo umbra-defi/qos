@@ -21,8 +21,6 @@ use qos_core::{
 mod services;
 
 pub use services::PairOrYubi;
-#[cfg(feature = "smartcard")]
-pub use services::advanced_provision_yubikey;
 pub use services::generate_file_key;
 
 const HOST_IP: &str = "host-ip";
@@ -67,8 +65,8 @@ const TOTAL_SHARES: &str = "total-shares";
 const FILE_PATH: &str = "file-path";
 const DISPLAY_TYPE: &str = "display-type";
 const DR_KEY_PATH: &str = "dr-key-path";
-const CURRENT_PIN_PATH: &str = "current-pin-path";
-const NEW_PIN_PATH: &str = "new-pin-path";
+const YUBIKEY_SALT_PATH: &str = "yubikey-salt-path";
+const CHALLENGE_COMMAND: &str = "challenge-command";
 const ENCRYPTED_QUORUM_KEY_PATH: &str = "encrypted-quorum-key-path";
 const PAYLOAD: &str = "payload";
 const PAYLOAD_PATH: &str = "payload-path";
@@ -188,31 +186,23 @@ pub enum Command {
 	/// sharding it (N=1), creating/signing/posting a Manifest, and
 	/// provisioning the quorum key.
 	DangerousDevBoot,
-	/// Provision a yubikey with a singing and encryption key.
+	/// Mint a hybrid member key derived from a `YubiKey` OTP challenge-response
+	/// slot: write a fresh salt and the member public key.
 	ProvisionYubiKey,
-	/// Provision a yubikey by generating a secret and importing it onto the
-	/// key. The generated secret (master seed) is written to disk so it can be
-	/// further backed up.
-	AdvancedProvisionYubiKey,
 	/// Create a dummy pivot build fingerprints with a correct hash
 	PivotHash,
 	/// Split a secret into shares with Shamir Secret Sharing.
 	ShamirSplit,
 	/// Reconstruct a secret from Shamir Secret Sharing shares.
 	ShamirReconstruct,
-	/// Sign a hex encoded payload with the yubikey.
+	/// Sign a hex encoded payload with the `YubiKey`-derived member key.
 	YubiKeySign,
-	/// Get the public key of a yubikey
+	/// Get the public key of the `YubiKey`-derived member key.
 	YubiKeyPublic,
 	/// Display some borsh encoded type in an easy to read format.
 	Display,
 	/// Convert a JSON manifest or manifest-envelope to Borsh format.
 	JsonToBorsh,
-	/// Reset the PIV app. WARNING: this is a destructive operation that will
-	/// destroy all PIV keys!
-	YubiKeyPivReset,
-	/// Change the pin of the PIV app on the yubikey.
-	YubiKeyChangePin,
 	/// Send the boot instruction for the enclave to start the key forwarding
 	/// process.
 	BootKeyFwd,
@@ -221,14 +211,14 @@ pub enum Command {
 	ExportKey,
 	/// Inject a quorum key into a non-fully provisioned enclave
 	InjectKey,
-	/// Verify a signature from `qos_p256` pair.
-	P256Verify,
-	/// Sign with a p256 signature.
-	P256Sign,
-	/// Encrypt to a `qos_p256` public key.
-	P256AsymmetricEncrypt,
-	/// Decrypt a payload encrypted to a `qos_p256` public key.
-	P256AsymmetricDecrypt,
+	/// Verify a signature from `qos_hybrid` pair.
+	HybridVerify,
+	/// Sign with an ML-DSA-87 signature from a hybrid master seed.
+	HybridSign,
+	/// Encrypt to a `qos_hybrid` public key.
+	HybridAsymmetricEncrypt,
+	/// Decrypt a payload encrypted to a `qos_hybrid` public key.
+	HybridAsymmetricDecrypt,
 }
 
 impl From<&str> for Command {
@@ -251,23 +241,20 @@ impl From<&str> for Command {
 			"post-share" => Self::PostShare,
 			"dangerous-dev-boot" => Self::DangerousDevBoot,
 			"provision-yubikey" => Self::ProvisionYubiKey,
-			"advanced-provision-yubikey" => Self::AdvancedProvisionYubiKey,
 			"pivot-hash" => Self::PivotHash,
 			"shamir-split" => Self::ShamirSplit,
 			"shamir-reconstruct" => Self::ShamirReconstruct,
 			"yubikey-sign" => Self::YubiKeySign,
 			"yubikey-public" => Self::YubiKeyPublic,
-			"yubikey-piv-reset" => Self::YubiKeyPivReset,
-			"yubikey-change-pin" => Self::YubiKeyChangePin,
 			"display" => Self::Display,
 			"json-to-borsh" => Self::JsonToBorsh,
 			"boot-key-fwd" => Self::BootKeyFwd,
 			"export-key" => Self::ExportKey,
 			"inject-key" => Self::InjectKey,
-			"p256-verify" => Self::P256Verify,
-			"p256-sign" => Self::P256Sign,
-			"p256-asymmetric-encrypt" => Self::P256AsymmetricEncrypt,
-			"p256-asymmetric-decrypt" => Self::P256AsymmetricDecrypt,
+			"hybrid-verify" => Self::HybridVerify,
+			"hybrid-sign" => Self::HybridSign,
+			"hybrid-asymmetric-encrypt" => Self::HybridAsymmetricEncrypt,
+			"hybrid-asymmetric-decrypt" => Self::HybridAsymmetricDecrypt,
 			_ => panic!(
 				"Unrecognized command, try something like `host-health --help`"
 			),
@@ -409,10 +396,13 @@ impl Command {
 	}
 
 	fn yubikey_token() -> Token {
-		Token::new(YUBIKEY, "Flag to indicate using a yubikey for signing")
-			.takes_value(false)
-			.required(false)
-			.forbids(vec![SECRET_PATH])
+		Token::new(
+			YUBIKEY,
+			"Derive the member key from a YubiKey OTP challenge-response slot",
+		)
+		.takes_value(false)
+		.required(false)
+		.forbids(vec![SECRET_PATH])
 	}
 	fn secret_path_token() -> Token {
 		Token::new(
@@ -542,18 +532,23 @@ impl Command {
 			.takes_value(true)
 			.required(false)
 	}
-	fn current_pin_path_token() -> Token {
+	fn yubikey_salt_path_token() -> Token {
 		Token::new(
-			CURRENT_PIN_PATH,
-			"Path to file descriptor with current pin.",
+			YUBIKEY_SALT_PATH,
+			"Path to the hex salt a YubiKey member key derives from.",
 		)
 		.takes_value(true)
 		.required(false)
+		.forbids(vec![SECRET_PATH])
 	}
-	fn new_pin_path_token() -> Token {
-		Token::new(NEW_PIN_PATH, "Path to file descriptor with new pin.")
-			.takes_value(true)
-			.required(true)
+	fn challenge_command_token() -> Token {
+		Token::new(
+			CHALLENGE_COMMAND,
+			"Shell command answering the hex challenge put in place of `{challenge}`; defaults to `ykman otp calculate 2 {challenge}`.",
+		)
+		.takes_value(true)
+		.required(false)
+		.forbids(vec![SECRET_PATH])
 	}
 	fn encrypted_quorum_key_path_token() -> Token {
 		Token::new(ENCRYPTED_QUORUM_KEY_PATH, "Path to encrypted quorum key.")
@@ -665,7 +660,8 @@ impl Command {
 			.token(Self::qos_release_dir_token())
 			.token(Self::pcr3_preimage_path_token())
 			.token(Self::unsafe_skip_attestation_token())
-			.token(Self::current_pin_path_token())
+			.token(Self::yubikey_salt_path_token())
+			.token(Self::challenge_command_token())
 			.token(Self::validation_time_override_token())
 	}
 
@@ -705,6 +701,8 @@ impl Command {
 	fn approve_manifest() -> Parser {
 		Parser::new()
 			.token(Self::yubikey_token())
+			.token(Self::yubikey_salt_path_token())
+			.token(Self::challenge_command_token())
 			.token(Self::secret_path_token())
 			.token(Self::manifest_path_token())
 			.token(Self::manifest_approvals_dir_token())
@@ -736,6 +734,8 @@ impl Command {
 	fn proxy_re_encrypt_share() -> Parser {
 		Parser::new()
 			.token(Self::yubikey_token())
+			.token(Self::yubikey_salt_path_token())
+			.token(Self::challenge_command_token())
 			.token(Self::secret_path_token())
 			.token(Self::share_path_token())
 			.token(Self::approval_path_token())
@@ -772,13 +772,10 @@ impl Command {
 	}
 
 	fn provision_yubikey() -> Parser {
-		Parser::new().token(Self::pub_path_token()).token(Self::yubikey_token())
-	}
-
-	fn advanced_provision_yubikey() -> Parser {
 		Parser::new()
-			.token(Self::master_seed_path_token())
-			.token(Self::current_pin_path_token())
+			.token(Self::pub_path_token())
+			.token(Self::yubikey_salt_path_token().required(true))
+			.token(Self::challenge_command_token())
 	}
 
 	fn shamir_split() -> Parser {
@@ -796,17 +793,16 @@ impl Command {
 	}
 
 	fn yubikey_sign() -> Parser {
-		Parser::new().token(Self::payload_token())
+		Parser::new()
+			.token(Self::payload_token())
+			.token(Self::yubikey_salt_path_token().required(true))
+			.token(Self::challenge_command_token())
 	}
 
 	fn yubikey_public() -> Parser {
 		Parser::new()
-	}
-
-	fn yubikey_change_pin() -> Parser {
-		Parser::new()
-			.token(Self::current_pin_path_token())
-			.token(Self::new_pin_path_token())
+			.token(Self::yubikey_salt_path_token().required(true))
+			.token(Self::challenge_command_token())
 	}
 
 	fn get_ephemeral_key_hex() -> Parser {
@@ -847,28 +843,28 @@ impl Command {
 		Self::base().token(Self::encrypted_quorum_key_path_token())
 	}
 
-	fn p256_verify() -> Parser {
+	fn hybrid_verify() -> Parser {
 		Parser::new()
 			.token(Self::payload_path_token())
 			.token(Self::signature_path_token())
 			.token(Self::pub_path_token())
 	}
 
-	fn p256_sign() -> Parser {
+	fn hybrid_sign() -> Parser {
 		Parser::new()
 			.token(Self::payload_path_token())
 			.token(Self::signature_path_token())
 			.token(Self::master_seed_path_token())
 	}
 
-	fn p256_asymmetric_encrypt() -> Parser {
+	fn hybrid_asymmetric_encrypt() -> Parser {
 		Parser::new()
 			.token(Self::plaintext_path_token())
 			.token(Self::ciphertext_path_token())
 			.token(Self::pub_path_token())
 	}
 
-	fn p256_asymmetric_decrypt() -> Parser {
+	fn hybrid_asymmetric_decrypt() -> Parser {
 		Parser::new()
 			.token(Self::plaintext_path_token())
 			.token(Self::ciphertext_path_token())
@@ -899,25 +895,20 @@ impl GetParserForCommand for Command {
 				Self::generate_manifest_envelope()
 			}
 			Self::ProvisionYubiKey => Self::provision_yubikey(),
-			Self::AdvancedProvisionYubiKey => {
-				Self::advanced_provision_yubikey()
-			}
 			Self::PivotHash => Self::pivot_build_fingerprints(),
 			Self::ShamirSplit => Self::shamir_split(),
 			Self::ShamirReconstruct => Self::shamir_reconstruct(),
 			Self::YubiKeySign => Self::yubikey_sign(),
 			Self::YubiKeyPublic => Self::yubikey_public(),
-			Self::YubiKeyPivReset => Parser::new(),
-			Self::YubiKeyChangePin => Self::yubikey_change_pin(),
 			Self::Display => Self::display(),
 			Self::JsonToBorsh => Self::json_to_borsh(),
 			Self::BootKeyFwd => Self::boot_key_fwd(),
 			Self::ExportKey => Self::export_key(),
 			Self::InjectKey => Self::inject_key(),
-			Self::P256Verify => Self::p256_verify(),
-			Self::P256Sign => Self::p256_sign(),
-			Self::P256AsymmetricEncrypt => Self::p256_asymmetric_encrypt(),
-			Self::P256AsymmetricDecrypt => Self::p256_asymmetric_decrypt(),
+			Self::HybridVerify => Self::hybrid_verify(),
+			Self::HybridSign => Self::hybrid_sign(),
+			Self::HybridAsymmetricEncrypt => Self::hybrid_asymmetric_encrypt(),
+			Self::HybridAsymmetricDecrypt => Self::hybrid_asymmetric_decrypt(),
 		}
 	}
 }
@@ -1252,15 +1243,12 @@ impl ClientOpts {
 		self.parsed.single(DR_KEY_PATH).map(Into::into)
 	}
 
-	fn new_pin_path(&self) -> String {
-		self.parsed
-			.single(NEW_PIN_PATH)
-			.expect("Missing `--new-pin-path`")
-			.clone()
+	fn yubikey_salt_path(&self) -> Option<String> {
+		self.parsed.single(YUBIKEY_SALT_PATH).map(Into::into)
 	}
 
-	fn current_pin_path(&self) -> Option<String> {
-		self.parsed.single(CURRENT_PIN_PATH).map(Into::into)
+	fn challenge_command(&self) -> Option<String> {
+		self.parsed.single(CHALLENGE_COMMAND).map(Into::into)
 	}
 
 	fn validation_time_override(&self) -> Option<u64> {
@@ -1355,9 +1343,6 @@ impl ClientRunner {
 				Command::ProvisionYubiKey => {
 					handlers::provision_yubikey(&self.opts);
 				}
-				Command::AdvancedProvisionYubiKey => {
-					handlers::advanced_provision_yubikey(&self.opts);
-				}
 				Command::BootGenesis => handlers::boot_genesis(&self.opts),
 				Command::AfterGenesis => handlers::after_genesis(&self.opts),
 				Command::VerifyGenesis => {
@@ -1397,10 +1382,6 @@ impl ClientRunner {
 				}
 				Command::YubiKeySign => handlers::yubikey_sign(&self.opts),
 				Command::YubiKeyPublic => handlers::yubikey_public(&self.opts),
-				Command::YubiKeyPivReset => handlers::yubikey_piv_reset(),
-				Command::YubiKeyChangePin => {
-					handlers::yubikey_change_pin(&self.opts);
-				}
 				Command::Display => {
 					handlers::display(&self.opts);
 				}
@@ -1410,13 +1391,13 @@ impl ClientRunner {
 				Command::BootKeyFwd => handlers::boot_key_fwd(&self.opts),
 				Command::ExportKey => handlers::export_key(&self.opts),
 				Command::InjectKey => handlers::inject_key(&self.opts),
-				Command::P256Verify => handlers::p256_verify(&self.opts),
-				Command::P256Sign => handlers::p256_sign(&self.opts),
-				Command::P256AsymmetricEncrypt => {
-					handlers::p256_asymmetric_encrypt(&self.opts);
+				Command::HybridVerify => handlers::hybrid_verify(&self.opts),
+				Command::HybridSign => handlers::hybrid_sign(&self.opts),
+				Command::HybridAsymmetricEncrypt => {
+					handlers::hybrid_asymmetric_encrypt(&self.opts);
 				}
-				Command::P256AsymmetricDecrypt => {
-					handlers::p256_asymmetric_decrypt(&self.opts);
+				Command::HybridAsymmetricDecrypt => {
+					handlers::hybrid_asymmetric_decrypt(&self.opts);
 				}
 			}
 		}
@@ -1510,104 +1491,38 @@ mod handlers {
 	}
 
 	pub(super) fn provision_yubikey(opts: &ClientOpts) {
-		#[cfg(not(feature = "smartcard"))]
-		{
-			panic!("{}", services::SMARTCARD_FEAT_DISABLED_MSG)
-		}
-
-		#[cfg(feature = "smartcard")]
-		{
-			if let Err(e) = services::provision_yubikey(opts.pub_path()) {
-				eprintln!("Error: {e:?}");
-				std::process::exit(1);
-			}
-		}
-	}
-
-	pub(super) fn advanced_provision_yubikey(opts: &ClientOpts) {
-		#[cfg(not(feature = "smartcard"))]
-		{
-			panic!("{}", services::SMARTCARD_FEAT_DISABLED_MSG)
-		}
-
-		#[cfg(feature = "smartcard")]
-		{
-			if let Err(e) = services::advanced_provision_yubikey(
-				opts.master_seed_path(),
-				opts.current_pin_path(),
-			) {
-				eprintln!("Error: {e:?}");
-				std::process::exit(1);
-			}
+		if let Err(e) = services::provision_yubikey(
+			opts.pub_path(),
+			opts.yubikey_salt_path().expect("Missing `--yubikey-salt-path`"),
+			opts.challenge_command()
+				.unwrap_or_else(|| {
+					crate::otp::DEFAULT_CHALLENGE_COMMAND.to_string()
+				})
+				.as_str(),
+		) {
+			eprintln!("Error: {e:?}");
+			std::process::exit(1);
 		}
 	}
 
 	pub(super) fn yubikey_sign(opts: &ClientOpts) {
-		#[cfg(not(feature = "smartcard"))]
-		{
-			panic!("{}", services::SMARTCARD_FEAT_DISABLED_MSG)
-		}
-
-		#[cfg(feature = "smartcard")]
-		{
-			if let Err(e) = services::yubikey_sign(&opts.payload()) {
-				eprintln!("Error: {e:?}");
-				std::process::exit(1);
-			}
+		if let Err(e) = services::yubikey_sign(
+			&opts.payload(),
+			opts.yubikey_salt_path().expect("Missing `--yubikey-salt-path`"),
+			opts.challenge_command(),
+		) {
+			eprintln!("Error: {e:?}");
+			std::process::exit(1);
 		}
 	}
 
-	pub(super) fn yubikey_public(_opts: &ClientOpts) {
-		#[cfg(not(feature = "smartcard"))]
-		{
-			panic!("{}", services::SMARTCARD_FEAT_DISABLED_MSG)
-		}
-
-		#[cfg(feature = "smartcard")]
-		{
-			if let Err(e) = services::yubikey_public() {
-				eprintln!("Error: {e:?}");
-				std::process::exit(1);
-			}
-		}
-	}
-
-	pub(super) fn yubikey_piv_reset() {
-		#[cfg(not(feature = "smartcard"))]
-		{
-			panic!("{}", services::SMARTCARD_FEAT_DISABLED_MSG)
-		}
-
-		#[cfg(feature = "smartcard")]
-		{
-			if let Err(e) = crate::yubikey::yubikey_piv_reset() {
-				eprintln!("Error: {e:?}");
-				std::process::exit(1);
-			}
-		}
-	}
-
-	pub(super) fn yubikey_change_pin(opts: &ClientOpts) {
-		#[cfg(not(feature = "smartcard"))]
-		{
-			panic!("{}", services::SMARTCARD_FEAT_DISABLED_MSG)
-		}
-
-		#[cfg(feature = "smartcard")]
-		{
-			let current_pin = services::pin_from_path(
-				opts.current_pin_path()
-					.expect("Missing `--current-pin-path` arg"),
-			);
-			let new_pin = services::pin_from_path(opts.new_pin_path());
-
-			if let Err(e) = crate::yubikey::yubikey_change_pin(
-				&current_pin[..],
-				&new_pin[..],
-			) {
-				eprintln!("Error: {e:?}");
-				std::process::exit(1);
-			}
+	pub(super) fn yubikey_public(opts: &ClientOpts) {
+		if let Err(e) = services::yubikey_public(
+			opts.yubikey_salt_path().expect("Missing `--yubikey-salt-path`"),
+			opts.challenge_command(),
+		) {
+			eprintln!("Error: {e:?}");
+			std::process::exit(1);
 		}
 	}
 
@@ -1840,7 +1755,8 @@ mod handlers {
 		match PairOrYubi::from_inputs(
 			opts.yubikey(),
 			opts.secret_path(),
-			opts.current_pin_path(),
+			opts.yubikey_salt_path(),
+			opts.challenge_command(),
 		) {
 			Err(e) => {
 				eprintln!("Error: {e:?}");
@@ -1884,8 +1800,8 @@ mod handlers {
 		}
 	}
 
-	pub(super) fn p256_verify(opts: &ClientOpts) {
-		if let Err(e) = services::p256_verify(
+	pub(super) fn hybrid_verify(opts: &ClientOpts) {
+		if let Err(e) = services::hybrid_verify(
 			opts.payload_path(),
 			opts.signature_path(),
 			opts.pub_path(),
@@ -1895,8 +1811,8 @@ mod handlers {
 		}
 	}
 
-	pub(super) fn p256_sign(opts: &ClientOpts) {
-		if let Err(e) = services::p256_sign(
+	pub(super) fn hybrid_sign(opts: &ClientOpts) {
+		if let Err(e) = services::hybrid_sign(
 			&opts.payload_path(),
 			opts.signature_path(),
 			opts.master_seed_path(),
@@ -1906,8 +1822,8 @@ mod handlers {
 		}
 	}
 
-	pub(super) fn p256_asymmetric_encrypt(opts: &ClientOpts) {
-		if let Err(e) = services::p256_asymmetric_encrypt(
+	pub(super) fn hybrid_asymmetric_encrypt(opts: &ClientOpts) {
+		if let Err(e) = services::hybrid_asymmetric_encrypt(
 			opts.plaintext_path(),
 			opts.ciphertext_path(),
 			opts.pub_path(),
@@ -1917,8 +1833,8 @@ mod handlers {
 		}
 	}
 
-	pub(super) fn p256_asymmetric_decrypt(opts: &ClientOpts) {
-		if let Err(e) = services::p256_asymmetric_decrypt(
+	pub(super) fn hybrid_asymmetric_decrypt(opts: &ClientOpts) {
+		if let Err(e) = services::hybrid_asymmetric_decrypt(
 			opts.plaintext_path(),
 			opts.ciphertext_path(),
 			opts.master_seed_path(),
