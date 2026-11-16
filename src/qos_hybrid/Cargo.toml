@@ -1,0 +1,39 @@
+[package]
+name = "umbra_qos_hybrid"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Post-quantum hybrid signing and encryption keys for QuorumOS: ML-KEM-1024 + X25519, ML-DSA-87, HKDF-SHA512 and AES-256-GCM"
+repository = "https://github.com/umbra-defi/qos"
+readme = "README.md"
+keywords = ["quorumos", "ml-kem", "ml-dsa", "x25519", "encryption"]
+categories = ["cryptography"]
+
+[lints]
+workspace = true
+
+[dependencies]
+qos_hex = { workspace = true }
+
+aes-gcm = { workspace = true }
+borsh = { workspace = true }
+fips203 = { workspace = true, features = ["ml-kem-1024"] }
+fips204 = { workspace = true, features = ["ml-dsa-87"] }
+hkdf = { workspace = true }
+rand_core = { workspace = true }
+serde = { workspace = true, features = ["alloc"] }
+sha2 = { workspace = true }
+x25519-dalek = { workspace = true, features = ["static_secrets", "zeroize"] }
+zeroize = { workspace = true, features = ["alloc", "derive"] }
+
+[dev-dependencies]
+qos_test_primitives = { path = "../qos_test_primitives", package = "umbra_qos_test_primitives" }
+
+[features]
+# Things to make writing tests easier
+mock = []
+
+[lib]
+name = "qos_hybrid"
+path = "src/lib.rs"

@@ -13,6 +13,7 @@ members = [
   "src/qos_test_harness",
   "src/qos_test_primitives",
   "src/qos_p256",
+  "src/qos_hybrid",
   "src/qos_nsm",
   "src/signed_echo",
   # special members that are not default-members
@@ -35,6 +36,7 @@ default-members = [
   "src/qos_test_harness",
   "src/qos_test_primitives",
   "src/qos_p256",
+  "src/qos_hybrid",
   "src/qos_nsm",
   "src/signed_echo",
 ]
@@ -74,6 +76,8 @@ axum = { version = "0.8", features = ["http1", "tokio", "json"], default-feature
 borsh = { version = "1.0", features = ["std", "derive"], default-features = false }
 chunked_transfer = { version = "1.5.0", default-features = false }
 etherparse = { version = "0.20.1", default-features = false }
+fips203 = { version = "0.4.3", default-features = false }
+fips204 = { version = "0.4.6", default-features = false }
 futures = { version = "0.3.30" }
 der = { version = "0.7", default-features = false }
 hex-literal = "0.4.0"
@@ -103,6 +107,7 @@ vsss-rs = { version = "5.4", default-features = false, features = ["std", "zeroi
 webpki = { version = "0.22.4", default-features = false }
 webpki-roots = { version = "1.0.10" }
 x509-cert = { version = "0.2.5", features = ["pem"], default-features = false }
+x25519-dalek = { version = "2.0.1", default-features = false }
 yubikey = { version = "0.8", features = ["untested"], default-features = false }
 zeroize = { version = "1.8", default-features = false }
 
@@ -119,6 +124,7 @@ qos_net = { path = "src/qos_net", package = "umbra_qos_net", version = "0.16.2",
 qos_test_harness = { path = "src/qos_test_harness", version = "0.14.1" }
 qos_nsm = { path = "src/qos_nsm", package = "umbra_qos_nsm", version = "0.16.2", default-features = false }
 qos_p256 = { path = "src/qos_p256", package = "umbra_qos_p256", version = "0.16.2" }
+qos_hybrid = { path = "src/qos_hybrid", package = "umbra_qos_hybrid", version = "0.16.2" }
 qos_test_primitives = { path = "src/qos_test_primitives", package = "umbra_qos_test_primitives", version = "0.16.2" }
 
 # used for pivot_download integration/example only
