@@ -1,11 +1,11 @@
 [package]
-name = "qos_hex"
+name = "umbra_qos_hex"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Utilities for encoding and decoding hex strings"
-repository = "https://github.com/tkhq/qos"
+repository = "https://github.com/umbra-defi/qos"
 readme = "README.md"
 keywords = ["quorumos", "hex", "encoding"]
 categories = ["encoding"]
@@ -18,3 +18,7 @@ serde = { workspace = true, optional = true }
 
 [features]
 serde = ["dep:serde", "serde/alloc"]
+
+[lib]
+name = "qos_hex"
+path = "src/lib.rs"

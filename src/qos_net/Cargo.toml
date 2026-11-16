@@ -1,11 +1,11 @@
 [package]
-name = "qos_net"
+name = "umbra_qos_net"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Socket to TCP proxy for QuorumOS enclave network access"
-repository = "https://github.com/tkhq/qos"
+repository = "https://github.com/umbra-defi/qos"
 readme = "README.md"
 keywords = ["quorumos", "enclave", "nitro", "proxy", "vsock"]
 categories = ["network-programming"]
@@ -23,7 +23,7 @@ tokio = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
-qos_test_primitives = { path = "../qos_test_primitives" }
+qos_test_primitives = { path = "../qos_test_primitives", package = "umbra_qos_test_primitives" }
 httparse = { workspace = true }
 chunked_transfer = { workspace = true }
 serde_json = { workspace = true, features = [
@@ -35,3 +35,11 @@ webpki-roots = { workspace = true }
 [features]
 default = ["proxy"] # keep this as a default feature ensures we lint by default
 proxy = ["hickory-resolver", "tokio", "tokio-rustls"]
+
+[lib]
+name = "qos_net"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos_net"
+path = "src/main.rs"

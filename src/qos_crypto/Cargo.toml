@@ -1,11 +1,11 @@
 [package]
-name = "qos_crypto"
+name = "umbra_qos_crypto"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Cryptographic primitives for use with QuorumOS"
-repository = "https://github.com/tkhq/qos"
+repository = "https://github.com/umbra-defi/qos"
 readme = "README.md"
 keywords = ["quorumos", "shamir", "secret-sharing", "threshold", "cryptography"]
 categories = ["cryptography"]
@@ -22,4 +22,8 @@ zeroize = { workspace = true, features = ["alloc"] }
 
 
 [dev-dependencies]
-qos_hex = { path = "../qos_hex" }
+qos_hex = { path = "../qos_hex", package = "umbra_qos_hex" }
+
+[lib]
+name = "qos_crypto"
+path = "src/lib.rs"

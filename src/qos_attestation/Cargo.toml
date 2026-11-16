@@ -1,11 +1,11 @@
 [package]
-name = "qos_attestation"
+name = "umbra_qos_attestation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Attestation, verification and caching for QuorumOS"
-repository = "https://github.com/tkhq/qos"
+repository = "https://github.com/umbra-defi/qos"
 readme = "README.md"
 keywords = ["quorumos", "nitro", "enclave", "attestation", "aws"]
 categories = ["cryptography"]
@@ -34,3 +34,7 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "ti
 [features]
 # Attestation cache with background refresh
 cache = ["dep:tokio"]
+
+[lib]
+name = "qos_attestation"
+path = "src/lib.rs"

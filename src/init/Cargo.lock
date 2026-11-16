@@ -828,10 +828,10 @@ dependencies = [
  "libc",
  "nix 0.30.1",
  "qos_aws",
- "qos_core",
- "qos_nsm",
  "qos_system",
  "tokio",
+ "umbra_qos_core",
+ "umbra_qos_nsm",
 ]
 
 [[package]]
@@ -1201,90 +1201,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "qos_system",
-]
-
-[[package]]
-name = "qos_core"
-version = "0.15.1"
-dependencies = [
- "aws-nitro-enclaves-nsm-api",
- "borsh",
- "etherparse",
- "futures",
- "libc",
- "nix 0.30.1",
- "qos_crypto",
- "qos_hex",
- "qos_json",
- "qos_nsm",
- "qos_p256",
- "serde",
- "serde_bytes",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-vsock",
- "zeroize",
-]
-
-[[package]]
-name = "qos_crypto"
-version = "0.15.1"
-dependencies = [
- "rand 0.9.4",
- "sha2",
- "thiserror",
- "vsss-rs",
- "zeroize",
-]
-
-[[package]]
-name = "qos_hex"
-version = "0.15.1"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "qos_json"
-version = "0.15.1"
-dependencies = [
- "qos_hex",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "qos_nsm"
-version = "0.15.1"
-dependencies = [
- "aws-nitro-enclaves-cose",
- "aws-nitro-enclaves-nsm-api",
- "borsh",
- "p384",
- "qos_hex",
- "qos_json",
- "serde",
- "serde_bytes",
- "sha2",
- "webpki",
- "x509-cert",
-]
-
-[[package]]
-name = "qos_p256"
-version = "0.15.1"
-dependencies = [
- "aes-gcm",
- "borsh",
- "hkdf",
- "hmac",
- "p256",
- "qos_hex",
- "serde",
- "sha2",
- "zeroize",
 ]
 
 [[package]]
@@ -1840,6 +1756,90 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "umbra_qos_core"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-nsm-api",
+ "borsh",
+ "etherparse",
+ "futures",
+ "libc",
+ "nix 0.30.1",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-vsock",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_json",
+ "umbra_qos_nsm",
+ "umbra_qos_p256",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_crypto"
+version = "0.16.2"
+dependencies = [
+ "rand 0.9.4",
+ "sha2",
+ "thiserror",
+ "vsss-rs",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_hex"
+version = "0.16.2"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "umbra_qos_json"
+version = "0.16.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "umbra_qos_hex",
+]
+
+[[package]]
+name = "umbra_qos_nsm"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-cose",
+ "aws-nitro-enclaves-nsm-api",
+ "borsh",
+ "p384",
+ "serde",
+ "serde_bytes",
+ "sha2",
+ "umbra_qos_hex",
+ "umbra_qos_json",
+ "webpki",
+ "x509-cert",
+]
+
+[[package]]
+name = "umbra_qos_p256"
+version = "0.16.2"
+dependencies = [
+ "aes-gcm",
+ "borsh",
+ "hkdf",
+ "hmac",
+ "p256",
+ "serde",
+ "sha2",
+ "umbra_qos_hex",
+ "zeroize",
+]
 
 [[package]]
 name = "unicode-ident"

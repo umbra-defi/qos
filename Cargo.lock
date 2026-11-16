@@ -1386,15 +1386,8 @@ dependencies = [
  "axum",
  "borsh",
  "futures",
- "qos_core 0.16.2",
- "qos_core 0.7.0",
- "qos_crypto 0.16.2",
- "qos_hex 0.16.2",
+ "qos_core",
  "qos_host",
- "qos_net",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
- "qos_test_primitives",
  "rand 0.9.4",
  "rustls",
  "serde",
@@ -1402,6 +1395,13 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-rustls",
+ "umbra_qos_core",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_net",
+ "umbra_qos_nsm",
+ "umbra_qos_p256",
+ "umbra_qos_test_primitives",
  "ureq",
  "url",
  "webpki-roots 1.0.10",
@@ -2059,56 +2059,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos_attestation"
-version = "0.16.2"
-dependencies = [
- "aws-nitro-enclaves-cose",
- "aws-nitro-enclaves-nsm-api",
- "p384",
- "qos_core 0.16.2",
- "qos_crypto 0.16.2",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
- "serde_bytes",
- "sha2",
- "thiserror",
- "tokio",
- "x509-cert",
-]
-
-[[package]]
 name = "qos_bridge"
 version = "0.16.2"
 dependencies = [
- "qos_core 0.16.2",
  "qos_host",
  "tokio",
+ "umbra_qos_core",
  "ureq",
-]
-
-[[package]]
-name = "qos_client"
-version = "0.16.2"
-dependencies = [
- "aws-nitro-enclaves-nsm-api",
- "borsh",
- "der",
- "lazy_static",
- "p256",
- "qos_core 0.16.2",
- "qos_crypto 0.16.2",
- "qos_hex 0.16.2",
- "qos_json",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
- "qos_test_primitives",
- "rand_core 0.9.3",
- "rpassword",
- "serde_json",
- "ureq",
- "x509-cert",
- "yubikey",
- "zeroize",
 ]
 
 [[package]]
@@ -2122,42 +2079,15 @@ dependencies = [
  "futures",
  "libc",
  "nix 0.30.1",
- "qos_crypto 0.7.0",
- "qos_hex 0.7.0",
- "qos_nsm 0.7.0",
- "qos_p256 0.7.0",
+ "qos_crypto",
+ "qos_hex",
+ "qos_nsm",
+ "qos_p256",
  "serde",
  "serde_bytes",
  "serde_json",
  "tokio",
  "tokio-vsock",
-]
-
-[[package]]
-name = "qos_core"
-version = "0.16.2"
-dependencies = [
- "aws-nitro-enclaves-nsm-api",
- "borsh",
- "etherparse",
- "futures",
- "libc",
- "nix 0.30.1",
- "qos_crypto 0.16.2",
- "qos_hex 0.16.2",
- "qos_json",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
- "qos_test_primitives",
- "rustls",
- "serde",
- "serde_bytes",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-vsock",
- "webpki-roots 1.0.10",
- "zeroize",
 ]
 
 [[package]]
@@ -2173,24 +2103,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos_crypto"
-version = "0.16.2"
-dependencies = [
- "qos_hex 0.16.2",
- "rand 0.9.4",
- "sha2",
- "thiserror",
- "vsss-rs",
- "zeroize",
-]
-
-[[package]]
 name = "qos_crypto_fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
- "qos_crypto 0.16.2",
+ "umbra_qos_crypto",
  "zeroize",
 ]
 
@@ -2204,51 +2122,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos_hex"
-version = "0.16.2"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "qos_host"
 version = "0.16.2"
 dependencies = [
  "axum",
- "qos_core 0.16.2",
- "qos_hex 0.16.2",
- "qos_nsm 0.16.2",
  "serde",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "qos_json"
-version = "0.16.2"
-dependencies = [
- "qos_hex 0.16.2",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "qos_net"
-version = "0.16.2"
-dependencies = [
- "borsh",
- "chunked_transfer",
- "futures",
- "hickory-resolver",
- "httparse",
- "qos_core 0.16.2",
- "qos_test_primitives",
- "rustls",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "webpki-roots 1.0.10",
+ "umbra_qos_core",
+ "umbra_qos_hex",
+ "umbra_qos_nsm",
 ]
 
 [[package]]
@@ -2257,7 +2140,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
- "qos_net",
+ "umbra_qos_net",
 ]
 
 [[package]]
@@ -2270,25 +2153,7 @@ dependencies = [
  "aws-nitro-enclaves-nsm-api",
  "borsh",
  "p384",
- "qos_hex 0.7.0",
- "serde_bytes",
- "sha2",
- "webpki",
- "x509-cert",
-]
-
-[[package]]
-name = "qos_nsm"
-version = "0.16.2"
-dependencies = [
- "aws-nitro-enclaves-cose",
- "aws-nitro-enclaves-nsm-api",
- "borsh",
- "hex-literal",
- "p384",
- "qos_hex 0.16.2",
- "qos_json",
- "serde",
+ "qos_hex",
  "serde_bytes",
  "sha2",
  "webpki",
@@ -2300,8 +2165,8 @@ name = "qos_nsm_fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "qos_hex 0.16.2",
- "qos_nsm 0.16.2",
+ "umbra_qos_hex",
+ "umbra_qos_nsm",
 ]
 
 [[package]]
@@ -2315,23 +2180,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "p256",
- "qos_hex 0.7.0",
- "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "qos_p256"
-version = "0.16.2"
-dependencies = [
- "aes-gcm",
- "borsh",
- "hkdf",
- "hmac",
- "p256",
- "qos_hex 0.16.2",
- "qos_test_primitives",
- "serde",
+ "qos_hex",
  "sha2",
  "zeroize",
 ]
@@ -2342,7 +2191,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
- "qos_p256 0.16.2",
+ "umbra_qos_p256",
  "zeroize",
 ]
 
@@ -2350,23 +2199,16 @@ dependencies = [
 name = "qos_test_harness"
 version = "0.16.2"
 dependencies = [
- "qos_core 0.16.2",
- "qos_crypto 0.16.2",
- "qos_hex 0.16.2",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
  "serde_json",
  "signed_echo",
  "thiserror",
  "tokio",
+ "umbra_qos_core",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_nsm",
+ "umbra_qos_p256",
  "ureq",
-]
-
-[[package]]
-name = "qos_test_primitives"
-version = "0.16.2"
-dependencies = [
- "nix 0.30.1",
 ]
 
 [[package]]
@@ -2892,15 +2734,15 @@ name = "signed_echo"
 version = "0.16.2"
 dependencies = [
  "axum",
- "qos_attestation",
- "qos_core 0.16.2",
- "qos_hex 0.16.2",
- "qos_json",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
  "serde",
  "serde_json",
  "tokio",
+ "umbra_qos_attestation",
+ "umbra_qos_core",
+ "umbra_qos_hex",
+ "umbra_qos_json",
+ "umbra_qos_nsm",
+ "umbra_qos_p256",
  "ureq",
 ]
 
@@ -3247,6 +3089,164 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "umbra_qos_attestation"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-cose",
+ "aws-nitro-enclaves-nsm-api",
+ "p384",
+ "serde_bytes",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "umbra_qos_core",
+ "umbra_qos_crypto",
+ "umbra_qos_nsm",
+ "umbra_qos_p256",
+ "x509-cert",
+]
+
+[[package]]
+name = "umbra_qos_client"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-nsm-api",
+ "borsh",
+ "der",
+ "lazy_static",
+ "p256",
+ "rand_core 0.9.3",
+ "rpassword",
+ "serde_json",
+ "umbra_qos_core",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_json",
+ "umbra_qos_nsm",
+ "umbra_qos_p256",
+ "umbra_qos_test_primitives",
+ "ureq",
+ "x509-cert",
+ "yubikey",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_core"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-nsm-api",
+ "borsh",
+ "etherparse",
+ "futures",
+ "libc",
+ "nix 0.30.1",
+ "rustls",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-vsock",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_json",
+ "umbra_qos_nsm",
+ "umbra_qos_p256",
+ "umbra_qos_test_primitives",
+ "webpki-roots 1.0.10",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_crypto"
+version = "0.16.2"
+dependencies = [
+ "rand 0.9.4",
+ "sha2",
+ "thiserror",
+ "umbra_qos_hex",
+ "vsss-rs",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_hex"
+version = "0.16.2"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "umbra_qos_json"
+version = "0.16.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "umbra_qos_hex",
+]
+
+[[package]]
+name = "umbra_qos_net"
+version = "0.16.2"
+dependencies = [
+ "borsh",
+ "chunked_transfer",
+ "futures",
+ "hickory-resolver",
+ "httparse",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "umbra_qos_core",
+ "umbra_qos_test_primitives",
+ "webpki-roots 1.0.10",
+]
+
+[[package]]
+name = "umbra_qos_nsm"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-cose",
+ "aws-nitro-enclaves-nsm-api",
+ "borsh",
+ "hex-literal",
+ "p384",
+ "serde",
+ "serde_bytes",
+ "sha2",
+ "umbra_qos_hex",
+ "umbra_qos_json",
+ "webpki",
+ "x509-cert",
+]
+
+[[package]]
+name = "umbra_qos_p256"
+version = "0.16.2"
+dependencies = [
+ "aes-gcm",
+ "borsh",
+ "hkdf",
+ "hmac",
+ "p256",
+ "serde",
+ "sha2",
+ "umbra_qos_hex",
+ "umbra_qos_test_primitives",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_test_primitives"
+version = "0.16.2"
+dependencies = [
+ "nix 0.30.1",
+]
 
 [[package]]
 name = "unicode-ident"
