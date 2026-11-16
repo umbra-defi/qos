@@ -17,7 +17,7 @@ workspace = true
 qos_crypto = { workspace = true }
 qos_hex = { workspace = true, features = ["serde"] }
 qos_json = { workspace = true }
-qos_p256 = { workspace = true }
+qos_hybrid = { workspace = true }
 qos_nsm = { workspace = true, default-features = false }
 
 etherparse = { workspace = true, optional = true }
@@ -40,7 +40,7 @@ tokio-vsock = { workspace = true }
 
 [dev-dependencies]
 qos_test_primitives = { path = "../qos_test_primitives", package = "umbra_qos_test_primitives" }
-qos_p256 = { workspace = true, features = ["mock"] }
+qos_hybrid = { workspace = true, features = ["mock"] }
 qos_nsm = { workspace = true, features = ["mock"], default-features = false }
 rustls = { workspace = true }
 webpki-roots = { workspace = true }

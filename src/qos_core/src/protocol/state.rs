@@ -1,6 +1,6 @@
 //! Quorum protocol state machine
+use qos_hybrid::HybridPair;
 use qos_nsm::NsmProvider;
-use qos_p256::P256Pair;
 
 use super::{
 	error::ProtocolError, msg::ProtocolMsg, services::provision::SecretBuilder,
@@ -189,7 +189,7 @@ pub(crate) struct ProtocolState {
 	pub provisioner: SecretBuilder,
 	pub attestor: Box<dyn NsmProvider>,
 	pub handles: Handles,
-	pending_live_ephemeral_key: Option<P256Pair>,
+	pending_live_ephemeral_key: Option<HybridPair>,
 	phase: ProtocolPhase,
 }
 
@@ -223,13 +223,13 @@ impl ProtocolState {
 		self.phase
 	}
 
-	pub(crate) fn set_pending_live_ephemeral_key(&mut self, key: P256Pair) {
+	pub(crate) fn set_pending_live_ephemeral_key(&mut self, key: HybridPair) {
 		self.pending_live_ephemeral_key = Some(key);
 	}
 
 	pub(crate) fn take_pending_live_ephemeral_key(
 		&mut self,
-	) -> Result<P256Pair, ProtocolError> {
+	) -> Result<HybridPair, ProtocolError> {
 		self.pending_live_ephemeral_key
 			.take()
 			.ok_or(ProtocolError::MissingLiveEphemeralKey)
@@ -455,8 +455,11 @@ mod handlers {
 		};
 
 		let result = boot::boot_standard(state, manifest_envelope, pivot)
-			.map(|nsm_response| ProtocolMsg::BootStandardResponse {
-				nsm_response,
+			.map(|(nsm_response, ephemeral_public_key)| {
+				ProtocolMsg::BootStandardResponse {
+					nsm_response,
+					ephemeral_public_key,
+				}
 			})
 			.map_err(ProtocolMsg::ProtocolErrorResponse);
 
@@ -489,13 +492,16 @@ mod handlers {
 	) -> ProtocolRouteResponse {
 		if let ProtocolMsg::LiveAttestationDocRequest = req {
 			let result = attestation::live_attestation_doc(state)
-				.map(|nsm_response| ProtocolMsg::LiveAttestationDocResponse {
-					nsm_response,
-					manifest_envelope: state
-						.handles
-						.get_manifest_envelope()
-						.ok()
-						.map(Box::new),
+				.map(|(nsm_response, ephemeral_public_key)| {
+					ProtocolMsg::LiveAttestationDocResponse {
+						nsm_response,
+						ephemeral_public_key,
+						manifest_envelope: state
+							.handles
+							.get_manifest_envelope()
+							.ok()
+							.map(Box::new),
+					}
 				})
 				.map_err(ProtocolMsg::ProtocolErrorResponse);
 
@@ -513,8 +519,11 @@ mod handlers {
 			req
 		{
 			let result = key::boot_key_forward(state, manifest_envelope, pivot)
-				.map(|nsm_response| ProtocolMsg::BootKeyForwardResponse {
-					nsm_response,
+				.map(|(nsm_response, ephemeral_public_key)| {
+					ProtocolMsg::BootKeyForwardResponse {
+						nsm_response,
+						ephemeral_public_key,
+					}
 				})
 				.map_err(ProtocolMsg::ProtocolErrorResponse);
 
@@ -531,12 +540,14 @@ mod handlers {
 		if let ProtocolMsg::ExportKeyRequest {
 			manifest_envelope,
 			cose_sign1_attestation_doc,
+			ephemeral_public_key,
 		} = req
 		{
 			let result = key::export_key(
 				state,
 				manifest_envelope,
 				cose_sign1_attestation_doc,
+				ephemeral_public_key,
 			)
 			.map(|key| {
 				let EncryptedQuorumKey { encrypted_quorum_key, signature } =

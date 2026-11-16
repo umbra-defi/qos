@@ -2,8 +2,8 @@
 
 use aws_nitro_enclaves_nsm_api::api::AttestationDoc;
 use borsh::{BorshDeserialize, BorshSerialize};
+use qos_hybrid::{HybridPair, HybridPublic};
 use qos_nsm::{nitro::attestation_doc_from_der, types::NsmResponse};
-use qos_p256::{P256Pair, P256Public};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
@@ -33,7 +33,7 @@ pub(in crate::protocol) fn inject_key(
 	// 1. Verify the signature over the `encrypted_quorum_key` against the
 	// Quorum Key specified in the New Manifest.
 	let quorum_public =
-		P256Public::from_bytes(&manifest.namespace().quorum_key)?;
+		HybridPublic::from_bytes(&manifest.namespace().quorum_key)?;
 	quorum_public
 		.verify(&encrypted_quorum_key, &signature)
 		.map_err(|_| ProtocolError::InvalidEncryptedQuorumKeySignature)?;
@@ -41,7 +41,7 @@ pub(in crate::protocol) fn inject_key(
 	// 2. Decrypt the encrypted Quorum Key in the request with the Ephemeral
 	// Key.
 	let quorum_master_seed: zeroize::Zeroizing<
-		[u8; qos_p256::MASTER_SEED_LEN],
+		[u8; qos_hybrid::MASTER_SEED_LEN],
 	> = {
 		let ephemeral_pair = state.handles.get_ephemeral_key()?;
 		let bytes = ephemeral_pair.decrypt(&encrypted_quorum_key)?;
@@ -54,8 +54,9 @@ pub(in crate::protocol) fn inject_key(
 
 	// 3. Check that the decrypted Quorum Key public key matches the one
 	// specified in the New Manifest.
-	let decrypted_quorum_pair = P256Pair::from_master_seed(&quorum_master_seed)
-		.map_err(|_| ProtocolError::InvalidQuorumSecret)?;
+	let decrypted_quorum_pair =
+		HybridPair::from_master_seed(&quorum_master_seed)
+			.map_err(|_| ProtocolError::InvalidQuorumSecret)?;
 	if decrypted_quorum_pair.public_key() != quorum_public {
 		return Err(ProtocolError::WrongQuorumKey);
 	}
@@ -78,17 +79,16 @@ pub(in crate::protocol) fn boot_key_forward(
 	state: &mut ProtocolState,
 	manifest_envelope: impl Into<VersionedManifestEnvelope>,
 	pivot: &[u8],
-) -> Result<NsmResponse, ProtocolError> {
+) -> Result<(NsmResponse, Vec<u8>), ProtocolError> {
 	let manifest_envelope = manifest_envelope.into();
-	let nsm_response =
-		put_manifest_and_pivot(state, &manifest_envelope, pivot)?;
-	Ok(nsm_response)
+	put_manifest_and_pivot(state, &manifest_envelope, pivot)
 }
 
 pub(in crate::protocol) fn export_key(
 	state: &mut ProtocolState,
 	new_manifest_envelope: impl Into<VersionedManifestEnvelope>,
 	cose_sign1_attestation_document: &[u8],
+	ephemeral_public_key: &[u8],
 ) -> Result<EncryptedQuorumKey, ProtocolError> {
 	let new_manifest_envelope = new_manifest_envelope.into();
 	// 1. Check the basic validity of the attestation doc (cert chain etc).
@@ -99,7 +99,31 @@ pub(in crate::protocol) fn export_key(
 		&*state.attestor,
 	)?;
 
-	export_key_internal(state, &new_manifest_envelope, &attestation_doc)
+	export_key_internal(
+		state,
+		&new_manifest_envelope,
+		&attestation_doc,
+		ephemeral_public_key,
+	)
+}
+
+/// Parse the full ephemeral key the New Node sent and check that the
+/// attestation document's `public_key` field holds its attestation binding.
+fn attested_ephemeral_key(
+	attestation_doc: &AttestationDoc,
+	ephemeral_public_key: &[u8],
+) -> Result<HybridPublic, ProtocolError> {
+	let attested_binding = attestation_doc
+		.public_key
+		.as_ref()
+		.ok_or(ProtocolError::MissingEphemeralKey)?;
+	let eph_key = HybridPublic::from_bytes(ephemeral_public_key)
+		.map_err(|_| ProtocolError::InvalidEphemeralKey)?;
+	if eph_key.attestation_binding().as_slice() != attested_binding.as_slice() {
+		return Err(ProtocolError::EphemeralKeyNotAttested);
+	}
+
+	Ok(eph_key)
 }
 
 // Primary logic of `export_key` pulled out so it can be unit tested.
@@ -107,6 +131,7 @@ fn export_key_internal(
 	state: &mut ProtocolState,
 	new_manifest_envelope: impl Into<VersionedManifestEnvelope>,
 	attestation_doc: &AttestationDoc,
+	ephemeral_public_key: &[u8],
 ) -> Result<EncryptedQuorumKey, ProtocolError> {
 	let new_manifest_envelope = new_manifest_envelope.into();
 	let old_manifest_envelope = state.handles.get_manifest_envelope()?;
@@ -117,18 +142,14 @@ fn export_key_internal(
 		attestation_doc,
 	)?;
 
-	let eph_key_bytes = attestation_doc
-		.public_key
-		.as_ref()
-		.ok_or(ProtocolError::MissingEphemeralKey)?;
-	let eph_key = P256Public::from_bytes(eph_key_bytes)
-		.map_err(|_| ProtocolError::InvalidEphemeralKey)?;
+	let eph_key =
+		attested_ephemeral_key(attestation_doc, ephemeral_public_key)?;
 
 	let quorum_key = state.handles.get_quorum_key()?;
-	// 10. Return the Quorum Key encrypted to the New Node's Ephemeral Key
-	// extracted from the attestation document and a signature over the
-	// encrypted payload. The Original Node uses its Quorum Key to create the
-	// signature.
+	// 10. Return the Quorum Key encrypted to the New Node's Ephemeral Key,
+	// whose attestation binding is in the attestation document, and a
+	// signature over the encrypted payload. The Original Node uses its Quorum
+	// Key to create the signature.
 	let encrypted_quorum_key =
 		eph_key.encrypt(&quorum_key.to_master_seed()[..])?;
 	let signature = quorum_key.sign(&encrypted_quorum_key)?;
@@ -287,13 +308,13 @@ mod test {
 
 	use aws_nitro_enclaves_nsm_api::api::{AttestationDoc, Digest};
 	use qos_crypto::sha_256;
+	use qos_hybrid::HybridPair;
 	use qos_nsm::{
 		NsmProvider,
 		mock::MockNsm,
 		nitro,
 		types::{NsmRequest, NsmResponse},
 	};
-	use qos_p256::P256Pair;
 	use qos_test_primitives::PathWrapper;
 	use serde_bytes::ByteBuf;
 
@@ -318,19 +339,19 @@ mod test {
 	struct TestArgs {
 		manifest_envelope: ManifestEnvelope,
 		#[allow(dead_code)]
-		members_with_keys: Vec<(P256Pair, QuorumMember)>,
+		members_with_keys: Vec<(HybridPair, QuorumMember)>,
 		att_doc: AttestationDoc,
-		eph_pair: P256Pair,
-		quorum_pair: P256Pair,
+		eph_pair: HybridPair,
+		quorum_pair: HybridPair,
 		pivot: Vec<u8>,
 	}
 
 	#[allow(clippy::too_many_lines)]
 	fn get_test_args() -> TestArgs {
-		let quorum_pair = P256Pair::generate().unwrap();
-		let member1_pair = P256Pair::generate().unwrap();
-		let member2_pair = P256Pair::generate().unwrap();
-		let member3_pair = P256Pair::generate().unwrap();
+		let quorum_pair = HybridPair::generate().unwrap();
+		let member1_pair = HybridPair::generate().unwrap();
+		let member2_pair = HybridPair::generate().unwrap();
+		let member3_pair = HybridPair::generate().unwrap();
 
 		let pivot = b"this is a pivot binary".to_vec();
 
@@ -394,8 +415,8 @@ mod test {
 			})
 			.collect();
 
-		let eph_pair = P256Pair::generate().unwrap();
-		let eph_pub_key = eph_pair.public_key().to_bytes();
+		let eph_pair = HybridPair::generate().unwrap();
+		let eph_binding = eph_pair.public_key().attestation_binding().to_vec();
 
 		let mut pcr_map = BTreeMap::new();
 		for idx in 0..nitro::ATTESTABLE_PCR_COUNT {
@@ -413,7 +434,7 @@ mod test {
 			ByteBuf::from(
 				nitro::expected_manifest_commitment_pcr::<nitro::Setup>(
 					&manifest.qos_hash(),
-					&eph_pub_key,
+					&eph_binding,
 				)
 				.unwrap()
 				.to_vec(),
@@ -426,7 +447,7 @@ mod test {
 			pcrs: pcr_map,
 			timestamp: u64::default(),
 			nonce: None,
-			public_key: Some(ByteBuf::from(eph_pub_key)),
+			public_key: Some(ByteBuf::from(eph_binding)),
 			user_data: Some(ByteBuf::from(manifest.qos_hash())),
 			digest: Digest::SHA384,
 			certificate: ByteBuf::default(),
@@ -477,7 +498,7 @@ mod test {
 				None,
 			);
 
-			let response =
+			let (response, ephemeral_public_key) =
 				boot_key_forward(&mut state, &manifest_envelope, &pivot)
 					.unwrap();
 			if let NsmResponse::Attestation { document } = response {
@@ -494,7 +515,10 @@ mod test {
 				)
 			);
 
-			handles.get_ephemeral_key().unwrap();
+			assert_eq!(
+				handles.get_ephemeral_key().unwrap().public_key().to_bytes(),
+				ephemeral_public_key
+			);
 		}
 
 		#[test]
@@ -634,7 +658,7 @@ mod test {
 		fn rejects_manifest_with_approval_from_non_member() {
 			let TestArgs { mut manifest_envelope, pivot, .. } = get_test_args();
 
-			let non_member_pair = P256Pair::generate().unwrap();
+			let non_member_pair = HybridPair::generate().unwrap();
 			let non_member = QuorumMember {
 				alias: "member1".to_string(),
 				pub_key: non_member_pair.public_key().to_bytes(),
@@ -753,7 +777,7 @@ mod test {
 			let TestArgs { manifest_envelope, att_doc, .. } = get_test_args();
 			let mut old_manifest_envelope = manifest_envelope.clone();
 			let different_quorum_key =
-				P256Pair::generate().unwrap().public_key().to_bytes();
+				HybridPair::generate().unwrap().public_key().to_bytes();
 			old_manifest_envelope.manifest.namespace.quorum_key =
 				different_quorum_key;
 
@@ -893,7 +917,7 @@ mod test {
 		fn rejects_manifest_with_approval_from_non_member() {
 			let TestArgs { manifest_envelope, att_doc, .. } = get_test_args();
 			let mut new_manifest_envelope = manifest_envelope.clone();
-			let non_member_pair = P256Pair::generate().unwrap();
+			let non_member_pair = HybridPair::generate().unwrap();
 
 			let non_member = QuorumMember {
 				alias: "member1".to_string(),
@@ -1123,7 +1147,7 @@ mod test {
 		fn setup_export_key_handles(
 			name: &str,
 			manifest_envelope: &ManifestEnvelope,
-			quorum_pair: &P256Pair,
+			quorum_pair: &HybridPair,
 		) -> Handles {
 			let temp_dir = std::env::temp_dir();
 			let ephemeral_file = temp_dir
@@ -1139,7 +1163,10 @@ mod test {
 				.to_string_lossy()
 				.into_owned();
 
-			P256Pair::generate().unwrap().to_hex_file(&ephemeral_file).unwrap();
+			HybridPair::generate()
+				.unwrap()
+				.to_hex_file(&ephemeral_file)
+				.unwrap();
 			quorum_pair.to_hex_file(&quorum_file).unwrap();
 			std::fs::write(
 				&manifest_file,
@@ -1160,13 +1187,13 @@ mod test {
 		/// booted with `manifest_envelope` and `eph_pair`.
 		fn new_enclave_mock_nsm(
 			manifest_envelope: &ManifestEnvelope,
-			eph_pair: &P256Pair,
+			eph_pair: &HybridPair,
 		) -> MockNsm {
 			let manifest = &manifest_envelope.manifest;
 			let setup_commitment_pcr =
 				nitro::expected_manifest_commitment_pcr::<nitro::Setup>(
 					&manifest.qos_hash(),
-					&eph_pair.public_key().to_bytes(),
+					&eph_pair.public_key().attestation_binding(),
 				)
 				.unwrap();
 
@@ -1186,7 +1213,7 @@ mod test {
 		fn signed_attestation_document(
 			nsm: &MockNsm,
 			manifest_envelope: &ManifestEnvelope,
-			eph_pair: &P256Pair,
+			eph_pair: &HybridPair,
 		) -> Vec<u8> {
 			let NsmResponse::Attestation { document } = nsm
 				.nsm_process_request(NsmRequest::Attestation {
@@ -1194,7 +1221,9 @@ mod test {
 						manifest_envelope.manifest.qos_hash().to_vec(),
 					),
 					nonce: None,
-					public_key: Some(eph_pair.public_key().to_bytes()),
+					public_key: Some(
+						eph_pair.public_key().attestation_binding().to_vec(),
+					),
 				})
 			else {
 				panic!("expected attestation response");
@@ -1221,7 +1250,13 @@ mod test {
 
 			let mut state = ProtocolState::new(Box::new(nsm), handles, None);
 			let EncryptedQuorumKey { encrypted_quorum_key, signature } =
-				export_key(&mut state, &manifest_envelope, &document).unwrap();
+				export_key(
+					&mut state,
+					&manifest_envelope,
+					&document,
+					&eph_pair.public_key().to_bytes(),
+				)
+				.unwrap();
 
 			// quorum key signature over payload is valid
 			assert!(
@@ -1234,7 +1269,7 @@ mod test {
 			let decrypted_quorum_secret =
 				eph_pair.decrypt(&encrypted_quorum_key).unwrap();
 			let reconstructed_quorum_pair =
-				P256Pair::from_master_seed(&zeroize::Zeroizing::new(
+				HybridPair::from_master_seed(&zeroize::Zeroizing::new(
 					decrypted_quorum_secret[..].try_into().unwrap(),
 				))
 				.unwrap();
@@ -1280,9 +1315,12 @@ mod test {
 				handles,
 				None,
 			);
-			let Err(err) =
-				export_key(&mut state, &manifest_envelope, &document)
-			else {
+			let Err(err) = export_key(
+				&mut state,
+				&manifest_envelope,
+				&document,
+				&eph_pair.public_key().to_bytes(),
+			) else {
 				panic!("expected export_key to reject the document");
 			};
 
@@ -1309,13 +1347,51 @@ mod test {
 			);
 
 			let mut state = ProtocolState::new(Box::new(nsm), handles, None);
-			let Err(err) =
-				export_key(&mut state, &manifest_envelope, &document)
-			else {
+			let Err(err) = export_key(
+				&mut state,
+				&manifest_envelope,
+				&document,
+				&eph_pair.public_key().to_bytes(),
+			) else {
 				panic!("expected export_key to reject the document");
 			};
 
 			assert!(matches!(err, ProtocolError::QosAttestError(_)));
+		}
+
+		#[test]
+		fn export_key_rejects_an_ephemeral_key_the_doc_does_not_bind() {
+			let TestArgs { manifest_envelope, eph_pair, quorum_pair, .. } =
+				get_test_args();
+			let handles = setup_export_key_handles(
+				"export_key_rejects_an_ephemeral_key_the_doc_does_not_bind",
+				&manifest_envelope,
+				&quorum_pair,
+			);
+
+			let nsm = new_enclave_mock_nsm(&manifest_envelope, &eph_pair);
+			let document = signed_attestation_document(
+				&nsm,
+				&manifest_envelope,
+				&eph_pair,
+			);
+			let substituted_key =
+				HybridPair::generate().unwrap().public_key().to_bytes();
+
+			let mut state = ProtocolState::new(Box::new(nsm), handles, None);
+			let Err(err) = export_key(
+				&mut state,
+				&manifest_envelope,
+				&document,
+				&substituted_key,
+			) else {
+				panic!(
+					"export_key must refuse to encrypt the quorum key to a key \
+					 whose binding is not in the attestation document"
+				);
+			};
+
+			assert_eq!(err, ProtocolError::EphemeralKeyNotAttested);
 		}
 
 		#[test]
@@ -1358,6 +1434,7 @@ mod test {
 					&mut protocol_state,
 					&manifest_envelope,
 					&att_doc,
+					&eph_pair.public_key().to_bytes(),
 				)
 				.unwrap();
 
@@ -1372,7 +1449,7 @@ mod test {
 			let decrypted_quorum_secret =
 				eph_pair.decrypt(&encrypted_quorum_key).unwrap();
 			let reconstructed_quorum_pair =
-				P256Pair::from_master_seed(&zeroize::Zeroizing::new(
+				HybridPair::from_master_seed(&zeroize::Zeroizing::new(
 					decrypted_quorum_secret[..].try_into().unwrap(),
 				))
 				.unwrap();
@@ -1417,7 +1494,7 @@ mod test {
 			);
 			let mut protocol_state =
 				ProtocolState::new(Box::new(MockNsm::new()), handles, None);
-			let live_eph_pair = P256Pair::generate().unwrap();
+			let live_eph_pair = HybridPair::generate().unwrap();
 			protocol_state
 				.set_pending_live_ephemeral_key(live_eph_pair.clone());
 			protocol_state
@@ -1467,7 +1544,7 @@ mod test {
 			)
 			.unwrap();
 
-			let wrong_key = P256Pair::generate().unwrap();
+			let wrong_key = HybridPair::generate().unwrap();
 			let encrypted_quorum_key = eph_pair
 				.public_key()
 				.encrypt(&wrong_key.to_master_seed()[..])
@@ -1521,7 +1598,7 @@ mod test {
 			)
 			.unwrap();
 
-			let wrong_key = P256Pair::generate().unwrap();
+			let wrong_key = HybridPair::generate().unwrap();
 			let encrypted_quorum_key = eph_pair
 				.public_key()
 				.encrypt(&quorum_pair.to_master_seed()[..])

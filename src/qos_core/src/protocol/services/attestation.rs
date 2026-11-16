@@ -8,19 +8,24 @@ use qos_nsm::{
 
 use crate::protocol::{ProtocolError, ProtocolState};
 
+/// Attest to the manifest and the current ephemeral key.
+///
+/// Returns the attestation, whose `public_key` field holds the ephemeral key's
+/// attestation binding, and the full ephemeral public key.
 pub(in crate::protocol) fn live_attestation_doc(
 	state: &mut ProtocolState,
-) -> Result<NsmResponse, ProtocolError> {
-	let ephemeral_public_key =
-		state.handles.get_ephemeral_key()?.public_key().to_bytes();
+) -> Result<(NsmResponse, Vec<u8>), ProtocolError> {
+	let ephemeral_public_key = state.handles.get_ephemeral_key()?.public_key();
 	let manifest_hash =
 		state.handles.get_manifest_envelope()?.manifest_hash().to_vec();
 
-	Ok(get_post_boot_attestation_doc(
+	let nsm_response = get_post_boot_attestation_doc(
 		&*state.attestor,
-		ephemeral_public_key,
+		ephemeral_public_key.attestation_binding().to_vec(),
 		manifest_hash,
-	))
+	);
+
+	Ok((nsm_response, ephemeral_public_key.to_bytes()))
 }
 
 pub(super) fn get_post_boot_attestation_doc(

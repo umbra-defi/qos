@@ -107,13 +107,13 @@ pub(in crate::protocol) fn provision(
 	let master_seed = state.provisioner.build()?;
 	state.provisioner.clear();
 
-	let master_seed: Zeroizing<[u8; qos_p256::MASTER_SEED_LEN]> =
+	let master_seed: Zeroizing<[u8; qos_hybrid::MASTER_SEED_LEN]> =
 		Zeroizing::new(
 			master_seed[..]
 				.try_into()
 				.map_err(|_| ProtocolError::IncorrectSecretLen)?,
 		);
-	let pair = qos_p256::P256Pair::from_master_seed(&master_seed)?;
+	let pair = qos_hybrid::HybridPair::from_master_seed(&master_seed)?;
 	let public_key_bytes = pair.public_key().to_bytes();
 
 	if public_key_bytes != manifest.namespace().quorum_key {
@@ -141,8 +141,8 @@ mod test {
 	use std::path::Path;
 
 	use qos_crypto::{sha_256, shamir::shares_generate};
+	use qos_hybrid::HybridPair;
 	use qos_nsm::mock::MockNsm;
-	use qos_p256::P256Pair;
 	use qos_test_primitives::PathWrapper;
 	use zeroize::Zeroizing;
 
@@ -162,9 +162,9 @@ mod test {
 	};
 
 	struct Setup {
-		quorum_pair: P256Pair,
-		eph_pair: P256Pair,
-		live_eph_pair: P256Pair,
+		quorum_pair: HybridPair,
+		eph_pair: HybridPair,
+		live_eph_pair: HybridPair,
 		threshold: usize,
 		state: ProtocolState,
 		approvals: Vec<Approval>,
@@ -182,16 +182,16 @@ mod test {
 			"pivot".to_string(),
 		);
 		// 1) Create and write eph key
-		let eph_pair = P256Pair::generate().unwrap();
-		let live_eph_pair = P256Pair::generate().unwrap();
+		let eph_pair = HybridPair::generate().unwrap();
+		let live_eph_pair = HybridPair::generate().unwrap();
 		handles.put_ephemeral_key(&eph_pair).unwrap();
 		// 2) Create and write manifest with threshold and quorum key
-		let quorum_pair = P256Pair::generate().unwrap();
+		let quorum_pair = HybridPair::generate().unwrap();
 		let threshold = 3usize;
 		let pivot = b"this is a pivot binary";
 
 		let members: Vec<_> = (0..4)
-			.map(|_| P256Pair::generate().unwrap())
+			.map(|_| HybridPair::generate().unwrap())
 			.enumerate()
 			.map(|(i, pair)| {
 				let member = QuorumMember {
@@ -352,7 +352,7 @@ mod test {
 
 		// 4) Create shards of a RANDOM KEY and encrypt them to eph key
 		let random_key = Zeroizing::new(
-			P256Pair::generate().unwrap().to_master_seed().to_vec(),
+			HybridPair::generate().unwrap().to_master_seed().to_vec(),
 		);
 		let encrypted_shares: Vec<_> =
 			shares_generate(&random_key, 4, threshold)
@@ -514,7 +514,7 @@ mod test {
 		let manifest =
 			state.handles.get_manifest_envelope().unwrap().manifest();
 		let mut approval = approvals.remove(0);
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 
 		// Change the member so that are not recognized as part of the set
 		approval.member.pub_key = pair.public_key().to_bytes();
@@ -560,7 +560,7 @@ mod test {
 				.collect();
 
 		let mut approval = approvals.remove(0);
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 
 		// Change the member so that are not recognized as part of the set
 		approval.member.pub_key = pair.public_key().to_bytes();

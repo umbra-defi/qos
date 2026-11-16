@@ -114,13 +114,18 @@ pub enum ProtocolMsg {
 	BootStandardResponse {
 		/// Should be `[NsmResponse::Attestation`]
 		nsm_response: NsmResponse,
+		/// The setup Ephemeral Key. The attestation's `public_key` field holds
+		/// only its `qos_hybrid::HybridPublic::attestation_binding`, which
+		/// clients must check before encrypting to it.
+		#[serde(with = "qos_hex::serde")]
+		ephemeral_public_key: Vec<u8>,
 	},
 
 	/// Execute Genesis Boot.
 	BootGenesisRequest {
 		/// Parameters for creating a Share Set
 		set: GenesisSet,
-		/// Optionally include a `qos_p256::P256Public` key for encrypting the
+		/// Optionally include a `qos_hybrid::HybridPublic` key for encrypting the
 		/// quorum key too. Intended for disaster recovery.
 		#[serde(
 			default,
@@ -168,9 +173,9 @@ pub enum ProtocolMsg {
 	},
 
 	/// Request an attestation document that includes references to the
-	/// manifest (in `user_data`) and current ephemeral key (`public_key`).
-	/// Setup attestations are verified against PCR16; live/app attestations
-	/// are verified against PCR17.
+	/// manifest (in `user_data`) and the attestation binding of the current
+	/// ephemeral key (`public_key`). Setup attestations are verified against
+	/// PCR16; live/app attestations are verified against PCR17.
 	LiveAttestationDocRequest,
 	/// Response to live attestation document request.
 	LiveAttestationDocResponse {
@@ -179,6 +184,10 @@ pub enum ProtocolMsg {
 		/// Manifest Envelope, if it exists, otherwise None.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		manifest_envelope: Option<Box<VersionedManifestEnvelope>>,
+		/// The current Ephemeral Key, whose attestation binding is in the
+		/// attestation's `public_key` field.
+		#[serde(with = "qos_hex::serde")]
+		ephemeral_public_key: Vec<u8>,
 	},
 
 	/// Execute a key forward attestation request
@@ -193,6 +202,10 @@ pub enum ProtocolMsg {
 	BootKeyForwardResponse {
 		/// Should be `[NsmResponse::Attestation`]
 		nsm_response: NsmResponse,
+		/// The setup Ephemeral Key, whose attestation binding is in the
+		/// attestation's `public_key` field.
+		#[serde(with = "qos_hex::serde")]
+		ephemeral_public_key: Vec<u8>,
 	},
 
 	/// Request a quorum key as part of the "key forwarding" flow.
@@ -205,11 +218,15 @@ pub enum ProtocolMsg {
 		/// PCR16.
 		#[serde(with = "qos_hex::serde")]
 		cose_sign1_attestation_doc: Vec<u8>,
+		/// Setup Ephemeral Key of the enclave requesting the quorum key. Its
+		/// attestation binding must equal the attestation's `public_key`.
+		#[serde(with = "qos_hex::serde")]
+		ephemeral_public_key: Vec<u8>,
 	},
 	/// Response to [`Self::ExportKeyRequest`]
 	ExportKeyResponse {
-		/// Quorum key encrypted to the setup Ephemeral Key from the submitted
-		/// attestation document.
+		/// Quorum key encrypted to the setup Ephemeral Key bound by the
+		/// submitted attestation document.
 		#[serde(with = "qos_hex::serde")]
 		encrypted_quorum_key: Vec<u8>,
 		/// Signature over the encrypted quorum key.
@@ -411,21 +428,22 @@ impl std::fmt::Display for ProtocolMsg {
 			Self::BootKeyForwardRequest { .. } => {
 				write!(f, "BootKeyForwardRequest")
 			}
-			Self::BootKeyForwardResponse { nsm_response } => match nsm_response
-			{
-				NsmResponse::Attestation { .. } => write!(
-					f,
-					"BootKeyForwardResponse {{ nsm_response: Attestation }}"
-				),
-				NsmResponse::Error(ecode) => write!(
-					f,
-					"BootKeyForwardResponse {{ nsm_response: Error({ecode:?}) }}"
-				),
-				_ => write!(
-					f,
-					"BootKeyForwardResponse {{ nsm_response: Other }}" // this shouldn't really show up
-				),
-			},
+			Self::BootKeyForwardResponse { nsm_response, .. } => {
+				match nsm_response {
+					NsmResponse::Attestation { .. } => write!(
+						f,
+						"BootKeyForwardResponse {{ nsm_response: Attestation }}"
+					),
+					NsmResponse::Error(ecode) => write!(
+						f,
+						"BootKeyForwardResponse {{ nsm_response: Error({ecode:?}) }}"
+					),
+					_ => write!(
+						f,
+						"BootKeyForwardResponse {{ nsm_response: Other }}" // this shouldn't really show up
+					),
+				}
+			}
 			Self::ExportKeyRequest { .. } => {
 				write!(f, "ExportKeyRequest")
 			}

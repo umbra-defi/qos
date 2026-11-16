@@ -3,8 +3,8 @@
 use std::{collections::HashSet, fmt};
 
 use qos_crypto::sha_256;
+use qos_hybrid::{HybridPair, HybridPublic};
 use qos_nsm::types::NsmResponse;
-use qos_p256::{P256Pair, P256Public};
 
 use crate::protocol::{
 	Hash256, ProtocolError, ProtocolState, QosHash, services::attestation,
@@ -284,7 +284,7 @@ pub struct QuorumMember {
 	/// cryptographically guaranteed and thus should not be trusted without
 	/// verification.
 	pub alias: String,
-	/// `P256Public` as bytes
+	/// `HybridPublic` as bytes
 	#[serde(with = "qos_hex::serde")]
 	pub pub_key: Vec<u8>,
 }
@@ -314,7 +314,7 @@ pub(crate) fn ensure_unique_members(
 	let mut signing_keys = HashSet::new();
 	let mut encryption_keys = HashSet::new();
 	for member in members {
-		let pub_key = P256Public::from_bytes(&member.pub_key)?;
+		let pub_key = HybridPublic::from_bytes(&member.pub_key)?;
 		if !aliases.insert(&member.alias)
 			|| !signing_keys.insert(pub_key.signing_public_key_bytes())
 			|| !encryption_keys.insert(pub_key.encryption_public_key_bytes())
@@ -593,7 +593,7 @@ impl fmt::Debug for Approval {
 impl Approval {
 	/// Verify that the approval is a valid a signature for the given `msg`.
 	pub(crate) fn verify(&self, msg: &[u8]) -> Result<(), ProtocolError> {
-		let pub_key = P256Public::from_bytes(&self.member.pub_key)?;
+		let pub_key = HybridPublic::from_bytes(&self.member.pub_key)?;
 
 		if pub_key.verify(msg, &self.signature).is_ok() {
 			Ok(())
@@ -667,7 +667,7 @@ impl ManifestEnvelope {
 		let mut uniq_members = HashSet::new();
 		for approval in &self.manifest_set_approvals {
 			let member_pub_key =
-				P256Public::from_bytes(&approval.member.pub_key)?;
+				HybridPublic::from_bytes(&approval.member.pub_key)?;
 
 			// Ensure that this is a valid signature from the member
 			let is_valid_signature = member_pub_key
@@ -722,11 +722,18 @@ impl ManifestEnvelope {
 	}
 }
 
+/// Check the manifest, generate the setup and live ephemeral keys, lock the
+/// manifest commitment PCRs and write the boot files.
+///
+/// Returns the setup attestation and the full setup ephemeral public key. The
+/// attestation's `public_key` field and the PCR commitments carry only the
+/// key's [`HybridPublic::attestation_binding`], since the full key does not fit
+/// in an NSM request, so callers must check the returned key against it.
 pub(in crate::protocol::services) fn put_manifest_and_pivot(
 	state: &mut ProtocolState,
 	manifest_envelope: &VersionedManifestEnvelope,
 	pivot: &[u8],
-) -> Result<NsmResponse, ProtocolError> {
+) -> Result<(NsmResponse, Vec<u8>), ProtocolError> {
 	// 1. Check signatures over the manifest envelope.
 	manifest_envelope.check_approvals()?;
 	if !manifest_envelope.share_set_approvals().is_empty() {
@@ -742,19 +749,22 @@ pub(in crate::protocol::services) fn put_manifest_and_pivot(
 	}
 
 	// 2. Generate the setup key and the post-provision live key.
-	let setup_ephemeral_key = P256Pair::generate()?;
-	let live_ephemeral_key = P256Pair::generate()?;
+	let setup_ephemeral_key = HybridPair::generate()?;
+	let live_ephemeral_key = HybridPair::generate()?;
 	let setup_ephemeral_public_key =
 		setup_ephemeral_key.public_key().to_bytes();
-	let live_ephemeral_public_key = live_ephemeral_key.public_key().to_bytes();
+	let setup_ephemeral_binding =
+		setup_ephemeral_key.public_key().attestation_binding();
+	let live_ephemeral_binding =
+		live_ephemeral_key.public_key().attestation_binding();
 	let manifest_hash = manifest_envelope.manifest_hash().to_vec();
 
 	// 3. Finalize PCR state before publishing boot files.
 	attestation::lock_manifest_commitment_pcr_bank(
 		&*state.attestor,
 		&manifest_hash,
-		&setup_ephemeral_public_key,
-		&live_ephemeral_public_key,
+		&setup_ephemeral_binding,
+		&live_ephemeral_binding,
 	)?;
 
 	state.set_pending_live_ephemeral_key(live_ephemeral_key);
@@ -763,28 +773,26 @@ pub(in crate::protocol::services) fn put_manifest_and_pivot(
 	state.handles.put_manifest_envelope(manifest_envelope)?;
 
 	// 4. Make an attestation request, placing the manifest hash in the
-	// `user_data` field and the Ephemeral Key public key in the `public_key`
-	// field.
+	// `user_data` field and the Ephemeral Key's attestation binding in the
+	// `public_key` field.
 	let nsm_response = attestation::get_post_boot_attestation_doc(
 		&*state.attestor,
-		setup_ephemeral_public_key,
+		setup_ephemeral_binding.to_vec(),
 		manifest_hash,
 	);
 
 	// 5. Return the NSM Response containing COSE Sign1 encoded attestation
-	// document.
-	Ok(nsm_response)
+	// document, and the full Ephemeral Key it binds.
+	Ok((nsm_response, setup_ephemeral_public_key))
 }
 
 pub(in crate::protocol) fn boot_standard(
 	state: &mut ProtocolState,
 	manifest_envelope: impl Into<VersionedManifestEnvelope>,
 	pivot: &[u8],
-) -> Result<NsmResponse, ProtocolError> {
+) -> Result<(NsmResponse, Vec<u8>), ProtocolError> {
 	let manifest_envelope = manifest_envelope.into();
-	let nsm_response =
-		put_manifest_and_pivot(state, &manifest_envelope, pivot)?;
-	Ok(nsm_response)
+	put_manifest_and_pivot(state, &manifest_envelope, pivot)
 }
 
 #[cfg(test)]
@@ -832,11 +840,11 @@ mod test {
 		}
 	}
 
-	fn get_manifest() -> (Manifest, Vec<(P256Pair, QuorumMember)>, Vec<u8>) {
-		let quorum_pair = P256Pair::generate().unwrap();
-		let member1_pair = P256Pair::generate().unwrap();
-		let member2_pair = P256Pair::generate().unwrap();
-		let member3_pair = P256Pair::generate().unwrap();
+	fn get_manifest() -> (Manifest, Vec<(HybridPair, QuorumMember)>, Vec<u8>) {
+		let quorum_pair = HybridPair::generate().unwrap();
+		let member1_pair = HybridPair::generate().unwrap();
+		let member2_pair = HybridPair::generate().unwrap();
+		let member3_pair = HybridPair::generate().unwrap();
 
 		let pivot = b"this is a pivot binary".to_vec();
 
@@ -894,16 +902,14 @@ mod test {
 	}
 
 	fn mixed_public_key(
-		encryption_pair: &P256Pair,
-		signing_pair: &P256Pair,
+		encryption_pair: &HybridPair,
+		signing_pair: &HybridPair,
 	) -> Vec<u8> {
-		let encryption_key = encryption_pair.public_key().to_bytes();
-		let signing_key = signing_pair.public_key().to_bytes();
-		let component_len = encryption_key.len() / 2;
-
-		encryption_key[..component_len]
+		encryption_pair
+			.public_key()
+			.encryption_public_key_bytes()
 			.iter()
-			.chain(&signing_key[component_len..])
+			.chain(signing_pair.public_key().signing_public_key_bytes().iter())
 			.copied()
 			.collect()
 	}
@@ -1152,7 +1158,7 @@ mod test {
 			manifest_file.display().to_string(),
 			pivot_file.display().to_string(),
 		);
-		handles.put_quorum_key(&P256Pair::generate().unwrap()).unwrap();
+		handles.put_quorum_key(&HybridPair::generate().unwrap()).unwrap();
 
 		let attestor = RaceCheckingNsm::new(handles.clone());
 		let mut protocol_state =
@@ -1325,7 +1331,7 @@ mod test {
 			// Change a member so that are not recognized as part of the
 			// manifest set.
 			let approval = approvals.get_mut(0).unwrap();
-			let pair = P256Pair::generate().unwrap();
+			let pair = HybridPair::generate().unwrap();
 			approval.member.pub_key = pair.public_key().to_bytes();
 			approval.signature = pair.sign(&manifest.qos_hash()).unwrap();
 
@@ -1399,9 +1405,9 @@ mod test {
 
 	#[test]
 	fn ensure_unique_members_rejects_shared_components() {
-		let pair_a = P256Pair::generate().unwrap();
-		let pair_b = P256Pair::generate().unwrap();
-		let pair_c = P256Pair::generate().unwrap();
+		let pair_a = HybridPair::generate().unwrap();
+		let pair_b = HybridPair::generate().unwrap();
+		let pair_c = HybridPair::generate().unwrap();
 		let member = |alias: &str, pub_key: Vec<u8>| QuorumMember {
 			alias: alias.to_string(),
 			pub_key,
