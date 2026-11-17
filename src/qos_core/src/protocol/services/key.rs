@@ -3,47 +3,16 @@
 use aws_nitro_enclaves_nsm_api::api::AttestationDoc;
 use borsh::{BorshDeserialize, BorshSerialize};
 use qos_hybrid::{HybridPair, HybridPublic};
-use qos_nsm::{
-	nitro::attestation_doc_from_der,
-	types::{NsmRequest, NsmResponse},
-};
+use qos_nsm::{nitro::attestation_doc_from_der, types::NsmResponse};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha512};
-use zeroize::Zeroizing;
 
 use crate::protocol::{
 	ProtocolError, ProtocolState, QosHash,
-	services::boot::{VersionedManifestEnvelope, put_manifest_and_pivot},
+	services::{
+		app_key::{Settled, seal_app_key, settle_quorum_key},
+		boot::{VersionedManifestEnvelope, put_manifest_and_pivot},
+	},
 };
-
-/// Domain separating [`app_key_transfer_user_data`].
-const APP_KEY_TRANSFER_DOMAIN: &[u8] = b"qos_app_key_transfer_v1";
-
-/// How a key-forward boot gets its app key when the forwarded key carries
-/// none, which happens when the source enclave runs a different manifest.
-#[derive(
-	Debug,
-	Clone,
-	Copy,
-	Default,
-	PartialEq,
-	Eq,
-	BorshSerialize,
-	BorshDeserialize,
-	Serialize,
-	Deserialize,
-)]
-#[serde(rename_all = "camelCase")]
-pub enum AppKeyMode {
-	/// Refuse to pivot unless an enclave of the same manifest forwards the
-	/// app key. The default, so a host that names no mode cannot split the
-	/// enclaves of one manifest across two app keys.
-	#[default]
-	Receive,
-	/// Mint a fresh app key. The host picks one boot per manifest for this,
-	/// the way it picks the one boot that receives quorum key shares.
-	Mint,
-}
 
 /// An encrypted quorum key along with a signature over the encrypted payload
 /// from the sender, and the app key when the sender runs the same manifest.
@@ -64,32 +33,14 @@ pub struct EncryptedQuorumKey {
 	)]
 	pub encrypted_app_key: Option<Vec<u8>>,
 	/// The sender's COSE Sign1 attestation document, whose `user_data` is
-	/// [`app_key_transfer_user_data`] over `encrypted_app_key`.
+	/// [`super::app_key::app_key_transfer_user_data`] over
+	/// `encrypted_app_key`.
 	#[serde(
 		default,
 		skip_serializing_if = "Option::is_none",
 		with = "qos_hex::serde::option"
 	)]
 	pub app_key_attestation_doc: Option<Vec<u8>>,
-}
-
-/// The `user_data` an enclave attests when it seals the app key to another:
-/// SHA-512 over a domain, the recipient's ephemeral key attestation binding
-/// and the encrypted app key.
-///
-/// The quorum key's signature cannot vouch for the app key, because the
-/// quorum key can be rebuilt outside an enclave from shares or a
-/// disaster-recovery key; only an attested enclave can produce this binding.
-#[must_use]
-pub fn app_key_transfer_user_data(
-	recipient_ephemeral_binding: &[u8],
-	encrypted_app_key: &[u8],
-) -> [u8; 64] {
-	let mut hasher = Sha512::new();
-	hasher.update(APP_KEY_TRANSFER_DOMAIN);
-	hasher.update(recipient_ephemeral_binding);
-	hasher.update(encrypted_app_key);
-	hasher.finalize().into()
 }
 
 pub(in crate::protocol) fn inject_key(
@@ -100,7 +51,7 @@ pub(in crate::protocol) fn inject_key(
 		encrypted_app_key,
 		app_key_attestation_doc,
 	}: EncryptedQuorumKey,
-) -> Result<(), ProtocolError> {
+) -> Result<Settled, ProtocolError> {
 	let manifest_envelope = state.handles.get_manifest_envelope()?;
 	let manifest = manifest_envelope.manifest();
 
@@ -135,106 +86,25 @@ pub(in crate::protocol) fn inject_key(
 		return Err(ProtocolError::WrongQuorumKey);
 	}
 
-	// 4. Take the app key from the sender, or mint it if this boot may, while
-	// the setup Ephemeral Key it was sealed to is still in place.
-	let app_key = forwarded_or_minted_app_key(
-		state,
-		encrypted_app_key,
-		app_key_attestation_doc,
-	)?;
-
-	// 5. Rotate the ephemeral key so it's safe for apps to use it independently
-	// of boot-related operations, which use the pre-boot ephemeral key as
-	// an encryption target (key-forward boot encrypts the quorum key to it)
-	let live_ephemeral_key = state.take_pending_live_ephemeral_key()?;
-	state.handles.rotate_ephemeral_key(&live_ephemeral_key)?;
-
-	// 6. Write the app key, then the Quorum Key, at which point New Node will
-	// automatically pivot to running the Pivot App.
+	// 4. Finish with the app key the sender forwarded, or wait for one when
+	// the manifest names a minter and the sender runs another manifest. The
+	// pivot starts once the Quorum Key file is written.
 	// (see `src/qos_core/src/reaper.rs`: we loop until the quorum key file exists)
-	state.handles.put_app_key(&app_key)?;
-	state.handles.put_quorum_key(&decrypted_quorum_pair)?;
-
-	Ok(())
-}
-
-/// Return the forwarded app key, or mint one when nothing was forwarded and
-/// the boot's [`AppKeyMode`] is [`AppKeyMode::Mint`].
-fn forwarded_or_minted_app_key(
-	state: &ProtocolState,
-	encrypted_app_key: Option<Vec<u8>>,
-	app_key_attestation_doc: Option<Vec<u8>>,
-) -> Result<HybridPair, ProtocolError> {
-	match (encrypted_app_key, app_key_attestation_doc) {
-		(Some(encrypted_app_key), Some(app_key_attestation_doc)) => {
-			receive_app_key(state, &encrypted_app_key, &app_key_attestation_doc)
-		}
-		(None, None) => match state.app_key_mode() {
-			AppKeyMode::Mint => Ok(HybridPair::generate()?),
-			AppKeyMode::Receive => Err(ProtocolError::AppKeyNotForwarded),
-		},
-		_ => Err(ProtocolError::AppKeyTransferIncomplete),
-	}
-}
-
-/// Check that the sender's attestation proves it runs this enclave's manifest
-/// and sealed exactly `encrypted_app_key` to this enclave, then decrypt it.
-fn receive_app_key(
-	state: &ProtocolState,
-	encrypted_app_key: &[u8],
-	cose_sign1_attestation_doc: &[u8],
-) -> Result<HybridPair, ProtocolError> {
-	let not_attested = |e: qos_nsm::nitro::AttestError| {
-		ProtocolError::AppKeyTransferNotAttested(e.to_string())
+	let forwarded = match (encrypted_app_key, app_key_attestation_doc) {
+		(Some(encrypted), Some(doc)) => Some((encrypted, doc)),
+		(None, None) => None,
+		_ => return Err(ProtocolError::AppKeyTransferIncomplete),
 	};
-	let manifest = state.handles.get_manifest_envelope()?.manifest();
-	let ephemeral_pair = state.handles.get_ephemeral_key()?;
-
-	let attestation_doc = verify_and_extract_attestation_doc_from_der(
-		cose_sign1_attestation_doc,
-		&*state.attestor,
-	)
-	.map_err(|e| ProtocolError::AppKeyTransferNotAttested(e.to_string()))?;
-	let user_data = app_key_transfer_user_data(
-		&ephemeral_pair.public_key().attestation_binding(),
-		encrypted_app_key,
-	);
-	qos_nsm::nitro::verify_attestation_doc_against_user_input(
-		&attestation_doc,
-		&user_data,
-		&manifest.enclave().pcr0,
-		&manifest.enclave().pcr1,
-		&manifest.enclave().pcr2,
-		&manifest.enclave().pcr3,
-	)
-	.map_err(not_attested)?;
-	qos_nsm::nitro::verify_attestation_doc_manifest_only_commitment(
-		&attestation_doc,
-		&manifest.manifest_hash(),
-	)
-	.map_err(not_attested)?;
-
-	let bytes = ephemeral_pair.decrypt(encrypted_app_key)?;
-	let master_seed: Zeroizing<[u8; qos_hybrid::MASTER_SEED_LEN]> =
-		Zeroizing::new(
-			bytes[..]
-				.try_into()
-				.map_err(|_| ProtocolError::InvalidAppKeySecret)?,
-		);
-	HybridPair::from_master_seed(&master_seed)
-		.map_err(|_| ProtocolError::InvalidAppKeySecret)
+	settle_quorum_key(state, decrypted_quorum_pair, forwarded)
 }
 
 pub(in crate::protocol) fn boot_key_forward(
 	state: &mut ProtocolState,
 	manifest_envelope: impl Into<VersionedManifestEnvelope>,
 	pivot: &[u8],
-	app_key_mode: AppKeyMode,
 ) -> Result<(NsmResponse, Vec<u8>), ProtocolError> {
 	let manifest_envelope = manifest_envelope.into();
-	let response = put_manifest_and_pivot(state, &manifest_envelope, pivot)?;
-	state.set_app_key_mode(app_key_mode);
-	Ok(response)
+	put_manifest_and_pivot(state, &manifest_envelope, pivot)
 }
 
 pub(in crate::protocol) fn export_key(
@@ -262,7 +132,7 @@ pub(in crate::protocol) fn export_key(
 
 /// Parse the full ephemeral key the New Node sent and check that the
 /// attestation document's `public_key` field holds its attestation binding.
-fn attested_ephemeral_key(
+pub(in crate::protocol) fn attested_ephemeral_key(
 	attestation_doc: &AttestationDoc,
 	ephemeral_public_key: &[u8],
 ) -> Result<HybridPublic, ProtocolError> {
@@ -307,12 +177,14 @@ fn export_key_internal(
 		eph_key.encrypt(&quorum_key.to_master_seed()[..])?;
 	let signature = quorum_key.sign(&encrypted_quorum_key)?;
 
-	// 11. When the New Node boots this node's manifest, also seal the app key
-	// to its Ephemeral Key, and attest the exact ciphertext so the New Node can
-	// tell it came from an enclave of its manifest.
+	// 11. When the New Node boots this node's manifest and the manifest has an
+	// app key, also seal the app key to its Ephemeral Key, and attest the exact
+	// ciphertext so the New Node can tell it came from an enclave of its
+	// manifest.
 	let (encrypted_app_key, app_key_attestation_doc) = if new_manifest_envelope
 		.manifest_hash()
 		== old_manifest_envelope.manifest_hash()
+		&& old_manifest_envelope.app_key_minter().is_some()
 	{
 		let (encrypted, doc) = seal_app_key(state, &eph_key)?;
 		(Some(encrypted), Some(doc))
@@ -326,35 +198,6 @@ fn export_key_internal(
 		encrypted_app_key,
 		app_key_attestation_doc,
 	})
-}
-
-/// Encrypt the app key to `recipient` and attest the ciphertext.
-///
-/// Returns the encrypted app key and the COSE Sign1 attestation document
-/// whose `user_data` binds it.
-fn seal_app_key(
-	state: &ProtocolState,
-	recipient: &HybridPublic,
-) -> Result<(Vec<u8>, Vec<u8>), ProtocolError> {
-	let app_key = state.handles.get_app_key()?;
-	let encrypted_app_key = recipient.encrypt(&app_key.to_master_seed()[..])?;
-	let user_data = app_key_transfer_user_data(
-		&recipient.attestation_binding(),
-		&encrypted_app_key,
-	);
-
-	match state.attestor.nsm_process_request(NsmRequest::Attestation {
-		user_data: Some(user_data.to_vec()),
-		nonce: None,
-		public_key: None,
-	}) {
-		NsmResponse::Attestation { document } => {
-			Ok((encrypted_app_key, document))
-		}
-		response => Err(ProtocolError::QosAttestError(format!(
-			"unexpected NSM response: {response:?}"
-		))),
-	}
 }
 
 /// Manifest validation logic. Extracted to make unit testing easier.
@@ -489,7 +332,7 @@ fn validate_manifest(
 	Ok(())
 }
 
-fn verify_and_extract_attestation_doc_from_der(
+pub(in crate::protocol) fn verify_and_extract_attestation_doc_from_der(
 	cose_sign1_der: &[u8],
 	nsm: &dyn qos_nsm::NsmProvider,
 ) -> Result<AttestationDoc, ProtocolError> {
@@ -503,7 +346,7 @@ fn verify_and_extract_attestation_doc_from_der(
 }
 
 #[cfg(test)]
-mod test {
+pub(super) mod test {
 	use std::collections::BTreeMap;
 
 	use aws_nitro_enclaves_nsm_api::api::{AttestationDoc, Digest};
@@ -526,28 +369,29 @@ mod test {
 		protocol::{
 			ProtocolError, ProtocolPhase, ProtocolState, QosHash,
 			services::{
+				app_key::Settled,
 				boot::{
 					Approval, Manifest, ManifestEnvelope, ManifestSet,
 					Namespace, NitroConfig, PivotConfig, QuorumMember,
 					RestartPolicy, ShareSet,
 				},
-				key::{AppKeyMode, EncryptedQuorumKey, inject_key},
+				key::{EncryptedQuorumKey, inject_key},
 			},
 		},
 	};
 
-	struct TestArgs {
-		manifest_envelope: ManifestEnvelope,
-		#[allow(dead_code)]
-		members_with_keys: Vec<(HybridPair, QuorumMember)>,
-		att_doc: AttestationDoc,
-		eph_pair: HybridPair,
-		quorum_pair: HybridPair,
-		pivot: Vec<u8>,
+	pub(in crate::protocol::services) struct TestArgs {
+		pub(in crate::protocol::services) manifest_envelope: ManifestEnvelope,
+		pub(in crate::protocol::services) members_with_keys:
+			Vec<(HybridPair, QuorumMember)>,
+		pub(in crate::protocol::services) att_doc: AttestationDoc,
+		pub(in crate::protocol::services) eph_pair: HybridPair,
+		pub(in crate::protocol::services) quorum_pair: HybridPair,
+		pub(in crate::protocol::services) pivot: Vec<u8>,
 	}
 
 	#[allow(clippy::too_many_lines)]
-	fn get_test_args() -> TestArgs {
+	pub(in crate::protocol::services) fn get_test_args() -> TestArgs {
 		let quorum_pair = HybridPair::generate().unwrap();
 		let member1_pair = HybridPair::generate().unwrap();
 		let member2_pair = HybridPair::generate().unwrap();
@@ -699,13 +543,9 @@ mod test {
 				None,
 			);
 
-			let (response, ephemeral_public_key) = boot_key_forward(
-				&mut state,
-				&manifest_envelope,
-				&pivot,
-				AppKeyMode::Receive,
-			)
-			.unwrap();
+			let (response, ephemeral_public_key) =
+				boot_key_forward(&mut state, &manifest_envelope, &pivot)
+					.unwrap();
 			if let NsmResponse::Attestation { document } = response {
 				assert!(!document.is_empty());
 			} else {
@@ -755,12 +595,7 @@ mod test {
 
 			// Remove an approval
 			manifest_envelope.manifest_set_approvals.pop().unwrap();
-			let err = boot_key_forward(
-				&mut state,
-				&manifest_envelope,
-				&pivot,
-				AppKeyMode::Receive,
-			);
+			let err = boot_key_forward(&mut state, &manifest_envelope, &pivot);
 			assert_eq!(Err(ProtocolError::NotEnoughApprovals), err,);
 
 			// check that nothing was written
@@ -802,12 +637,8 @@ mod test {
 
 			// Use a different pivot then what is referenced in the manifest
 			let other_pivot = b"other pivot".to_vec();
-			let err = boot_key_forward(
-				&mut state,
-				&manifest_envelope,
-				&other_pivot,
-				AppKeyMode::Receive,
-			);
+			let err =
+				boot_key_forward(&mut state, &manifest_envelope, &other_pivot);
 			assert!(
 				matches!(err, Err(ProtocolError::InvalidPivotHash { .. })),
 				"expected InvalidPivotHash error, got {err:?}"
@@ -855,12 +686,7 @@ mod test {
 			let bad_approval =
 				manifest_envelope.manifest_set_approvals[0].clone();
 
-			let err = boot_key_forward(
-				&mut state,
-				&manifest_envelope,
-				&pivot,
-				AppKeyMode::Receive,
-			);
+			let err = boot_key_forward(&mut state, &manifest_envelope, &pivot);
 			assert_eq!(
 				Err(ProtocolError::InvalidManifestApproval(bad_approval)),
 				err,
@@ -918,12 +744,7 @@ mod test {
 			// Add an approval from a random key
 			manifest_envelope.manifest_set_approvals.push(non_member_approval);
 
-			let err = boot_key_forward(
-				&mut state,
-				&manifest_envelope,
-				&pivot,
-				AppKeyMode::Receive,
-			);
+			let err = boot_key_forward(&mut state, &manifest_envelope, &pivot);
 			assert_eq!(Err(ProtocolError::NotManifestSetMember), err,);
 
 			// check that nothing was written
@@ -1711,327 +1532,6 @@ mod test {
 		}
 	}
 
-	mod app_key_transfer {
-		use super::{
-			export_key_inner::{
-				new_enclave_mock_nsm, setup_export_key_handles,
-				signed_attestation_document,
-			},
-			*,
-		};
-		use crate::protocol::services::key::app_key_transfer_user_data;
-
-		/// An enclave waiting for a forwarded key, with its own files.
-		struct Receiver {
-			state: ProtocolState,
-			_files: Vec<PathWrapper<String>>,
-		}
-
-		fn receiver(
-			name: &str,
-			manifest_envelope: &ManifestEnvelope,
-			eph_pair: &HybridPair,
-			app_key_mode: AppKeyMode,
-		) -> Receiver {
-			let ephemeral_file =
-				PathWrapper::from(format!("/tmp/{name}.receiver.eph.secret"));
-			let quorum_file = PathWrapper::from(format!(
-				"/tmp/{name}.receiver.quorum.secret"
-			));
-			let app_key_file =
-				PathWrapper::from(format!("/tmp/{name}.receiver.app.secret"));
-			let manifest_file =
-				PathWrapper::from(format!("/tmp/{name}.receiver.manifest"));
-			eph_pair.to_hex_file(&*ephemeral_file).unwrap();
-			std::fs::write(
-				&*manifest_file,
-				serde_json::to_vec(manifest_envelope).unwrap(),
-			)
-			.unwrap();
-
-			let handles = Handles::new(
-				ephemeral_file.display().to_string(),
-				quorum_file.display().to_string(),
-				app_key_file.display().to_string(),
-				manifest_file.display().to_string(),
-				"pivot".to_string(),
-			);
-			let mut state =
-				ProtocolState::new(Box::new(MockNsm::new()), handles, None);
-			state.set_pending_live_ephemeral_key(
-				HybridPair::generate().unwrap(),
-			);
-			state.set_app_key_mode(app_key_mode);
-
-			Receiver {
-				state,
-				_files: vec![
-					ephemeral_file,
-					quorum_file,
-					app_key_file,
-					manifest_file,
-				],
-			}
-		}
-
-		/// Export the quorum key, and the app key `app_pair`, from an enclave
-		/// running `local_manifest_envelope` with NSM `exporter_nsm` to the
-		/// New Node holding `eph_pair`.
-		fn export_from(
-			name: &str,
-			exporter_nsm: MockNsm,
-			local_manifest_envelope: &ManifestEnvelope,
-			args: &TestArgs,
-			app_pair: &HybridPair,
-		) -> EncryptedQuorumKey {
-			let handles = setup_export_key_handles(
-				name,
-				local_manifest_envelope,
-				&args.quorum_pair,
-				app_pair,
-			);
-			let document = signed_attestation_document(
-				&exporter_nsm,
-				&args.manifest_envelope,
-				&args.eph_pair,
-			);
-			let mut state =
-				ProtocolState::new(Box::new(exporter_nsm), handles, None);
-			export_key(
-				&mut state,
-				&args.manifest_envelope,
-				&document,
-				&args.eph_pair.public_key().to_bytes(),
-			)
-			.unwrap()
-		}
-
-		#[test]
-		fn same_manifest_enclave_receives_the_app_key() {
-			let name = "same_manifest_enclave_receives_the_app_key";
-			let args = get_test_args();
-			let app_pair = HybridPair::generate().unwrap();
-			let nsm =
-				new_enclave_mock_nsm(&args.manifest_envelope, &args.eph_pair);
-
-			let forwarded = export_from(
-				name,
-				nsm,
-				&args.manifest_envelope,
-				&args,
-				&app_pair,
-			);
-			let encrypted_app_key = forwarded.encrypted_app_key.clone().expect(
-				"an enclave forwards the app key to one booting its own manifest",
-			);
-			let document = forwarded.app_key_attestation_doc.clone().unwrap();
-			let attested =
-				qos_nsm::nitro::unsafe_attestation_doc_from_der(&document)
-					.unwrap();
-			assert_eq!(
-				attested.user_data.unwrap().as_ref(),
-				app_key_transfer_user_data(
-					&args.eph_pair.public_key().attestation_binding(),
-					&encrypted_app_key,
-				)
-				.as_slice(),
-				"the sender must attest the exact ciphertext it sealed"
-			);
-
-			let mut receiver = receiver(
-				name,
-				&args.manifest_envelope,
-				&args.eph_pair,
-				AppKeyMode::Receive,
-			);
-			inject_key(&mut receiver.state, forwarded).unwrap();
-
-			assert!(receiver.state.handles.get_app_key().unwrap() == app_pair);
-			assert!(receiver.state.handles.quorum_key_exists());
-		}
-
-		#[test]
-		fn another_manifest_gets_no_app_key() {
-			let name = "another_manifest_gets_no_app_key";
-			let args = get_test_args();
-			let mut older_manifest_envelope = args.manifest_envelope.clone();
-			older_manifest_envelope.manifest.namespace.nonce -= 1;
-			let nsm =
-				new_enclave_mock_nsm(&args.manifest_envelope, &args.eph_pair);
-
-			let forwarded = export_from(
-				name,
-				nsm,
-				&older_manifest_envelope,
-				&args,
-				&HybridPair::generate().unwrap(),
-			);
-
-			assert!(
-				forwarded.encrypted_app_key.is_none()
-					&& forwarded.app_key_attestation_doc.is_none(),
-				"the app key never leaves for an enclave of another manifest"
-			);
-		}
-
-		#[test]
-		fn receive_mode_refuses_to_pivot_without_an_app_key() {
-			let name = "receive_mode_refuses_to_pivot_without_an_app_key";
-			let args = get_test_args();
-			let mut older_manifest_envelope = args.manifest_envelope.clone();
-			older_manifest_envelope.manifest.namespace.nonce -= 1;
-			let nsm =
-				new_enclave_mock_nsm(&args.manifest_envelope, &args.eph_pair);
-			let forwarded = export_from(
-				name,
-				nsm,
-				&older_manifest_envelope,
-				&args,
-				&HybridPair::generate().unwrap(),
-			);
-
-			let mut receiver = receiver(
-				name,
-				&args.manifest_envelope,
-				&args.eph_pair,
-				AppKeyMode::Receive,
-			);
-
-			assert_eq!(
-				inject_key(&mut receiver.state, forwarded),
-				Err(ProtocolError::AppKeyNotForwarded)
-			);
-			assert!(!receiver.state.handles.quorum_key_exists());
-			assert!(receiver.state.handles.get_app_key().is_err());
-		}
-
-		#[test]
-		fn mint_mode_mints_when_no_app_key_is_forwarded() {
-			let name = "mint_mode_mints_when_no_app_key_is_forwarded";
-			let args = get_test_args();
-			let mut older_manifest_envelope = args.manifest_envelope.clone();
-			older_manifest_envelope.manifest.namespace.nonce -= 1;
-			let nsm =
-				new_enclave_mock_nsm(&args.manifest_envelope, &args.eph_pair);
-			let old_app_pair = HybridPair::generate().unwrap();
-			let forwarded = export_from(
-				name,
-				nsm,
-				&older_manifest_envelope,
-				&args,
-				&old_app_pair,
-			);
-
-			let mut receiver = receiver(
-				name,
-				&args.manifest_envelope,
-				&args.eph_pair,
-				AppKeyMode::Mint,
-			);
-			inject_key(&mut receiver.state, forwarded).unwrap();
-
-			let minted = receiver.state.handles.get_app_key().unwrap();
-			assert!(minted != old_app_pair);
-		}
-
-		#[test]
-		fn refuses_an_app_key_the_sender_did_not_attest() {
-			let name = "refuses_an_app_key_the_sender_did_not_attest";
-			let args = get_test_args();
-			let nsm =
-				new_enclave_mock_nsm(&args.manifest_envelope, &args.eph_pair);
-			let mut forwarded = export_from(
-				name,
-				nsm,
-				&args.manifest_envelope,
-				&args,
-				&HybridPair::generate().unwrap(),
-			);
-			// Someone holding the quorum key, but not running in an enclave,
-			// swaps in an app key they know.
-			forwarded.encrypted_app_key = Some(
-				args.eph_pair
-					.public_key()
-					.encrypt(
-						&HybridPair::generate().unwrap().to_master_seed()[..],
-					)
-					.unwrap(),
-			);
-
-			let mut receiver = receiver(
-				name,
-				&args.manifest_envelope,
-				&args.eph_pair,
-				AppKeyMode::Receive,
-			);
-
-			assert!(matches!(
-				inject_key(&mut receiver.state, forwarded),
-				Err(ProtocolError::AppKeyTransferNotAttested(_))
-			));
-			assert!(!receiver.state.handles.quorum_key_exists());
-		}
-
-		#[test]
-		fn refuses_an_app_key_from_an_enclave_of_another_manifest() {
-			let name = "refuses_an_app_key_from_an_enclave_of_another_manifest";
-			let args = get_test_args();
-			let nsm =
-				new_enclave_mock_nsm(&args.manifest_envelope, &args.eph_pair)
-					.with_pcr(
-						nitro::MANIFEST_ONLY_COMMITMENT_PCR_INDEX,
-						vec![7; nitro::PCR_SHA384_LEN],
-					);
-			let forwarded = export_from(
-				name,
-				nsm,
-				&args.manifest_envelope,
-				&args,
-				&HybridPair::generate().unwrap(),
-			);
-
-			let mut receiver = receiver(
-				name,
-				&args.manifest_envelope,
-				&args.eph_pair,
-				AppKeyMode::Receive,
-			);
-
-			assert!(matches!(
-				inject_key(&mut receiver.state, forwarded),
-				Err(ProtocolError::AppKeyTransferNotAttested(_))
-			));
-		}
-
-		#[test]
-		fn refuses_an_app_key_without_the_senders_attestation() {
-			let name = "refuses_an_app_key_without_the_senders_attestation";
-			let args = get_test_args();
-			let nsm =
-				new_enclave_mock_nsm(&args.manifest_envelope, &args.eph_pair);
-			let mut forwarded = export_from(
-				name,
-				nsm,
-				&args.manifest_envelope,
-				&args,
-				&HybridPair::generate().unwrap(),
-			);
-			forwarded.app_key_attestation_doc = None;
-
-			let mut receiver = receiver(
-				name,
-				&args.manifest_envelope,
-				&args.eph_pair,
-				AppKeyMode::Mint,
-			);
-
-			assert_eq!(
-				inject_key(&mut receiver.state, forwarded),
-				Err(ProtocolError::AppKeyTransferIncomplete)
-			);
-		}
-	}
-
 	mod inject_key {
 
 		use std::{fs, path::Path};
@@ -2074,7 +1574,6 @@ mod test {
 			let live_eph_pair = HybridPair::generate().unwrap();
 			protocol_state
 				.set_pending_live_ephemeral_key(live_eph_pair.clone());
-			protocol_state.set_app_key_mode(AppKeyMode::Mint);
 			protocol_state
 				.transition(ProtocolPhase::WaitingForForwardedKey)
 				.unwrap();
@@ -2091,12 +1590,12 @@ mod test {
 						app_key_attestation_doc: None,
 					}
 				),
-				Ok(())
+				Ok(Settled::Pivoting)
 			);
 
-			// writes the quorum key, and the app key a Mint boot creates
+			// writes the quorum key; a manifest naming no minter has no app key
 			assert!(protocol_state.handles.quorum_key_exists());
-			assert!(protocol_state.handles.get_app_key().is_ok());
+			assert!(protocol_state.handles.get_app_key().is_err());
 
 			// Make sure the EK is persisted
 			assert!(Path::new(&*ephemeral_file).exists());

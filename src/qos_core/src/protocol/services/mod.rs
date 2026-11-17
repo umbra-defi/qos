@@ -1,5 +1,6 @@
 //! Services for the protocol executor.
 
+pub mod app_key;
 pub(crate) mod attestation;
 pub mod boot;
 pub mod genesis;

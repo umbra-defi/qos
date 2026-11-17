@@ -40,6 +40,9 @@ pub enum ManifestBuilderError {
 	/// A v2 manifest cannot contain a patch approval set.
 	#[error("manifest v2 does not support a patch set")]
 	V2DoesNotSupportPatchSet,
+	/// A v1 manifest cannot name an app key minter.
+	#[error("manifest v1 does not support an app key minter")]
+	V1DoesNotSupportAppKeyMinter,
 }
 
 /// Builds a versioned manifest using either the v1 or v2 schema.
@@ -63,6 +66,7 @@ pub struct ManifestBuilder {
 	enclave: Option<NitroConfig>,
 	patch_set: Option<PatchSet>,
 	dns: Option<DnsConfig>,
+	app_key_minter: Option<Vec<u8>>,
 }
 
 impl Default for ManifestBuilder {
@@ -89,6 +93,7 @@ impl ManifestBuilder {
 			enclave: None,
 			patch_set: None,
 			dns: None,
+			app_key_minter: None,
 		}
 	}
 
@@ -195,6 +200,14 @@ impl ManifestBuilder {
 		self
 	}
 
+	/// Name the hybrid public key whose signed order makes one boot mint the
+	/// manifest's app key (v2 only).
+	#[must_use]
+	pub fn app_key_minter(mut self, app_key_minter: Vec<u8>) -> Self {
+		self.app_key_minter = Some(app_key_minter);
+		self
+	}
+
 	/// Build the manifest in its version-preserving wrapper.
 	///
 	/// # Errors
@@ -226,6 +239,11 @@ impl ManifestBuilder {
 				}
 				if self.dns.is_some() {
 					return Err(ManifestBuilderError::V1DoesNotSupportDns);
+				}
+				if self.app_key_minter.is_some() {
+					return Err(
+						ManifestBuilderError::V1DoesNotSupportAppKeyMinter,
+					);
 				}
 				let patch_set = self
 					.patch_set
@@ -266,6 +284,7 @@ impl ManifestBuilder {
 					share_set,
 					enclave,
 					dns: self.dns,
+					app_key_minter: self.app_key_minter,
 				}))
 			}
 		}

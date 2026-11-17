@@ -24,6 +24,9 @@ const OLD_EPH_PATH: &str = "/tmp/key-fwd-e2e/old_eph.secret";
 const NEW_EPH_PATH: &str = "/tmp/key-fwd-e2e/new_eph.secret";
 const QUORUM_KEY_PUB_PATH: &str =
 	"./mock/namespaces/quit-coding-to-vape/quorum_key.pub";
+const MINTER_SECRET_PATH: &str = "/tmp/key-fwd-e2e/app_key_minter.secret";
+const MINTER_PUB_PATH: &str = "/tmp/key-fwd-e2e/app_key_minter.pub";
+const MINT_ORDER_PATH: &str = "/tmp/key-fwd-e2e/app_key_mint_order";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn key_fwd_e2e() {
@@ -203,11 +206,31 @@ fn write_mock_pcrs() -> PathWrapper<std::path::PathBuf> {
 }
 
 fn generate_manifest_envelope() {
+	// The manifest names an app key minter, so its enclaves hold an app key.
+	assert!(
+		Command::new(integration::QOS_CLIENT_PATH)
+			.args([
+				"generate-file-key",
+				"--master-seed-path",
+				MINTER_SECRET_PATH,
+				"--pub-path",
+				MINTER_PUB_PATH,
+			])
+			.spawn()
+			.unwrap()
+			.wait()
+			.unwrap()
+			.success()
+	);
 	let pivot_args = format!("[--msg,{TEST_MSG}]");
 	assert!(
 		Command::new(integration::QOS_CLIENT_PATH)
 			.args([
 				"generate-manifest",
+				"--use-manifest-version",
+				"2",
+				"--app-key-minter-path",
+				MINTER_PUB_PATH,
 				"--nonce",
 				"2",
 				"--namespace",
@@ -228,8 +251,6 @@ fn generate_manifest_envelope() {
 				"./mock/keys/manifest-set",
 				"--share-set-dir",
 				"./mock/keys/share-set",
-				"--patch-set-dir",
-				"./mock/keys/manifest-set",
 				"--quorum-key-path",
 				QUORUM_KEY_PUB_PATH
 			])
@@ -264,8 +285,8 @@ fn generate_manifest_envelope() {
 					"./mock/keys/manifest-set",
 					"--share-set-dir",
 					"./mock/keys/share-set",
-					"--patch-set-dir",
-					"./mock/keys/manifest-set",
+					"--app-key-minter-path",
+					MINTER_PUB_PATH,
 					"--quorum-key-path",
 					QUORUM_KEY_PUB_PATH,
 					"--alias",
@@ -455,6 +476,49 @@ fn boot_old_enclave(
 				.success()
 		);
 	}
+
+	// The shares rebuilt the quorum key, but the manifest names a minter, so
+	// the enclave holds it unwritten until the minter orders the app key.
+	assert!(
+		!std::path::Path::new(old_secret_path).exists(),
+		"the quorum key file starts the pivot, so it waits for the app key"
+	);
+	assert!(
+		Command::new(integration::QOS_CLIENT_PATH)
+			.args([
+				"sign-app-key-mint-order",
+				"--manifest-envelope-path",
+				MANIFEST_ENVELOPE_PATH,
+				"--attestation-doc-path",
+				ATTESTATION_DOC_PATH,
+				"--master-seed-path",
+				MINTER_SECRET_PATH,
+				"--order-path",
+				MINT_ORDER_PATH,
+			])
+			.spawn()
+			.unwrap()
+			.wait()
+			.unwrap()
+			.success()
+	);
+	assert!(
+		Command::new(integration::QOS_CLIENT_PATH)
+			.args([
+				"mint-app-key",
+				"--order-path",
+				MINT_ORDER_PATH,
+				"--host-port",
+				&old_host_port.to_string(),
+				"--host-ip",
+				LOCAL_HOST,
+			])
+			.spawn()
+			.unwrap()
+			.wait()
+			.unwrap()
+			.success()
+	);
 
 	// Check that the enclave wrote its quorum key
 	let quorum_pair = HybridPair::from_hex_file(old_secret_path).unwrap();

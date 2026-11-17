@@ -12,6 +12,7 @@ use qos_core::protocol::{
 	QosHash,
 	msg::{JsonBytes, ProtocolMsg, ProtocolMsgEncoding},
 	services::{
+		app_key::{EncryptedAppKey, app_key_mint_order_message},
 		boot::{
 			Approval, BridgeConfig, DnsConfig, Manifest as ManifestV1,
 			ManifestBuilder, ManifestBuilderError,
@@ -22,7 +23,7 @@ use qos_core::protocol::{
 			VersionedManifestEnvelope,
 		},
 		genesis::{GenesisOutput, GenesisSet},
-		key::{AppKeyMode, EncryptedQuorumKey},
+		key::EncryptedQuorumKey,
 	},
 };
 use qos_crypto::{sha_256, sha_384, sha_512};
@@ -148,6 +149,12 @@ pub enum Error {
 	ManifestV1RequiresPatchSet,
 	/// v1/v0 manifests do not support DNS resolver configuration.
 	ManifestV1DoesNotSupportDnsConfig,
+	/// v1/v0 manifests cannot name an app key minter.
+	ManifestV1DoesNotSupportAppKeyMinter,
+	/// The manifest names no app key minter, so it has no app key to mint.
+	ManifestNamesNoAppKeyMinter,
+	/// The master seed is not the manifest's app key minter.
+	NotTheAppKeyMinter,
 	/// Failed to construct a manifest from the supplied configuration.
 	ManifestBuilder(ManifestBuilderError),
 	/// The manifest schema is not supported by this client operation.
@@ -718,6 +725,7 @@ pub(crate) struct GenerateManifestArgs<P: AsRef<Path>> {
 	pub bridge_config: Vec<BridgeConfig>,
 	pub dns_resolvers: Option<Vec<IpAddr>>,
 	pub debug_mode: bool,
+	pub app_key_minter_path: Option<P>,
 }
 
 pub(crate) fn generate_manifest<P: AsRef<Path>>(
@@ -739,8 +747,12 @@ pub(crate) fn generate_manifest<P: AsRef<Path>>(
 		bridge_config,
 		dns_resolvers,
 		debug_mode,
+		app_key_minter_path,
 	} = args;
 
+	if app_key_minter_path.is_some() {
+		return Err(Error::ManifestV1DoesNotSupportAppKeyMinter);
+	}
 	if dns_resolvers.is_some() {
 		return Err(Error::ManifestV1DoesNotSupportDnsConfig);
 	}
@@ -806,6 +818,7 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 		bridge_config,
 		dns_resolvers,
 		debug_mode,
+		app_key_minter_path,
 	} = args;
 
 	if patch_set_dir.is_some() {
@@ -837,6 +850,12 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 		.enclave(nitro_config);
 	let manifest = match dns_resolvers {
 		Some(resolvers) => manifest.dns(DnsConfig { resolvers }),
+		None => manifest,
+	};
+	let manifest = match app_key_minter_path {
+		Some(path) => manifest.app_key_minter(
+			HybridPublic::from_hex_file(path.as_ref())?.to_bytes(),
+		),
 		None => manifest,
 	}
 	.build()?;
@@ -878,6 +897,7 @@ pub(crate) struct ApproveManifestArgs<P: AsRef<Path>> {
 	pub manifest_set_dir: P,
 	pub share_set_dir: P,
 	pub patch_set_dir: Option<P>,
+	pub app_key_minter_path: Option<P>,
 	pub alias: String,
 	pub unsafe_auto_confirm: bool,
 }
@@ -896,11 +916,22 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 		manifest_set_dir,
 		share_set_dir,
 		patch_set_dir,
+		app_key_minter_path,
 		alias,
 		unsafe_auto_confirm,
 	} = args;
 
 	let manifest = read_manifest_compat(&manifest_path)?;
+	// An approver vouches for the app key minter as for every other key: the
+	// manifest must name exactly the one they hold, or none when they hold none.
+	let expected_minter = app_key_minter_path
+		.map(|path| HybridPublic::from_hex_file(path).map(|key| key.to_bytes()))
+		.transpose()?;
+	if manifest.app_key_minter() != expected_minter.as_deref() {
+		eprintln!("App key minter does not match");
+		eprintln!("Exiting early without approving manifest");
+		std::process::exit(1);
+	}
 	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
 		.map_err(Error::FailedToReadQuorumPublicKey)?;
 	let patch_set = match (&manifest, patch_set_dir) {
@@ -1242,7 +1273,6 @@ pub(crate) fn boot_key_fwd<P: AsRef<Path>>(
 	manifest_envelope_path: P,
 	pivot_path: P,
 	attestation_doc_path: P,
-	app_key_mode: AppKeyMode,
 ) -> Result<(), Error> {
 	let pivot =
 		fs::read(pivot_path.as_ref()).map_err(Error::FailedToReadPivot)?;
@@ -1253,7 +1283,6 @@ pub(crate) fn boot_key_fwd<P: AsRef<Path>>(
 	let req = ProtocolMsg::BootKeyForwardRequest {
 		manifest_envelope: Box::new(manifest_envelope),
 		pivot,
-		app_key_mode,
 	};
 	let (cose_sign1, ephemeral_public_key) =
 		post_request_with_encoding_fallback(uri, &req, encodings, |resp| {
@@ -1391,7 +1420,146 @@ pub(crate) fn inject_key<P: AsRef<Path>>(
 	};
 
 	match request::post(uri, &req).unwrap() {
-		ProtocolMsg::InjectKeyResponse => println!("Successful key injection!"),
+		ProtocolMsg::InjectKeyResponse { awaiting_app_key: false } => {
+			println!("Successful key injection!");
+		}
+		ProtocolMsg::InjectKeyResponse { awaiting_app_key: true } => println!(
+			"Quorum key injected; the enclave waits for its app key (mint-app-key or inject-app-key)"
+		),
+		r => {
+			return Err(Error::UnexpectedProtocolMsgResponse(format!("{r:?}")));
+		}
+	}
+
+	Ok(())
+}
+
+/// Sign, with the app key minter's master seed, an order for the boot whose
+/// attestation document is at `attestation_doc_path` to mint the app key of
+/// the manifest in `manifest_envelope_path`, and write it as hex.
+///
+/// The order names the boot's setup ephemeral key, checked against the
+/// document's binding, so it mints on that boot only.
+pub(crate) fn sign_app_key_mint_order<P: AsRef<Path>>(
+	manifest_envelope_path: P,
+	attestation_doc_path: P,
+	master_seed_path: P,
+	order_path: P,
+) -> Result<(), Error> {
+	let manifest_envelope =
+		read_manifest_envelope_compat(manifest_envelope_path)?;
+	let minter = manifest_envelope
+		.app_key_minter()
+		.ok_or(Error::ManifestNamesNoAppKeyMinter)?;
+	let minter_pair = HybridPair::from_hex_file(master_seed_path)?;
+	if minter_pair.public_key().to_bytes() != minter {
+		return Err(Error::NotTheAppKeyMinter);
+	}
+
+	let cose_sign1 = fs::read(attestation_doc_path.as_ref())
+		.map_err(Error::FailedToReadAttestationDoc)?;
+	let attestation_doc =
+		qos_nsm::nitro::unsafe_attestation_doc_from_der(&cose_sign1)?;
+	let ephemeral_key = attested_ephemeral_key(
+		&attestation_doc,
+		&read_ephemeral_public_key(&attestation_doc_path)?,
+	)?;
+
+	let order = minter_pair.sign(&app_key_mint_order_message(
+		&manifest_envelope.manifest_hash(),
+		&ephemeral_key.attestation_binding(),
+	))?;
+	write_with_msg(
+		order_path.as_ref(),
+		qos_hex::encode(&order).as_bytes(),
+		"App key mint order",
+	);
+
+	Ok(())
+}
+
+/// Send the mint order at `order_path` to the waiting boot it names.
+pub(crate) fn mint_app_key<P: AsRef<Path>>(
+	uri: &str,
+	order_path: P,
+) -> Result<(), Error> {
+	let order = fs::read_to_string(order_path.as_ref()).map_err(|e| {
+		Error::FailedToRead {
+			path: order_path.as_ref().display().to_string(),
+			error: e.to_string(),
+		}
+	})?;
+	let req = ProtocolMsg::MintAppKeyRequest {
+		order_signature: qos_hex::decode(order.trim())?,
+	};
+
+	match request::post(uri, &req).unwrap() {
+		ProtocolMsg::MintAppKeyResponse => println!("App key minted."),
+		r => {
+			return Err(Error::UnexpectedProtocolMsgResponse(format!("{r:?}")));
+		}
+	}
+
+	Ok(())
+}
+
+/// Ask the enclave at `uri`, which holds the app key, to seal it to the
+/// waiting boot whose setup attestation document is at
+/// `attestation_doc_path`, and write the result to `encrypted_app_key_path`.
+pub(crate) fn export_app_key<P: AsRef<Path>>(
+	uri: &str,
+	attestation_doc_path: P,
+	encrypted_app_key_path: P,
+) -> Result<(), Error> {
+	let cose_sign1_attestation_doc = fs::read(attestation_doc_path.as_ref())
+		.map_err(Error::FailedToReadAttestationDoc)?;
+	let ephemeral_public_key =
+		read_ephemeral_public_key(&attestation_doc_path)?;
+	let req = ProtocolMsg::ExportAppKeyRequest {
+		cose_sign1_attestation_doc,
+		ephemeral_public_key,
+	};
+
+	let sealed = match request::post(uri, &req).unwrap() {
+		ProtocolMsg::ExportAppKeyResponse {
+			encrypted_app_key,
+			app_key_attestation_doc,
+		} => EncryptedAppKey { encrypted_app_key, app_key_attestation_doc },
+		r => {
+			return Err(Error::UnexpectedProtocolMsgResponse(format!("{r:?}")));
+		}
+	};
+	write_with_msg(
+		encrypted_app_key_path.as_ref(),
+		&serde_json::to_vec(&sealed).expect("hex fields always serialize"),
+		"Encrypted app key",
+	);
+
+	Ok(())
+}
+
+/// Send the sealed app key at `encrypted_app_key_path` to the waiting boot it
+/// was sealed to.
+pub(crate) fn inject_app_key<P: AsRef<Path>>(
+	uri: &str,
+	encrypted_app_key_path: P,
+) -> Result<(), Error> {
+	let bytes = fs::read(encrypted_app_key_path.as_ref()).map_err(|e| {
+		Error::FailedToRead {
+			path: encrypted_app_key_path.as_ref().display().to_string(),
+			error: e.to_string(),
+		}
+	})?;
+	let EncryptedAppKey { encrypted_app_key, app_key_attestation_doc } =
+		serde_json::from_slice(&bytes)
+			.map_err(|e| Error::Deserialize(e.to_string()))?;
+	let req = ProtocolMsg::InjectAppKeyRequest {
+		encrypted_app_key,
+		app_key_attestation_doc,
+	};
+
+	match request::post(uri, &req).unwrap() {
+		ProtocolMsg::InjectAppKeyResponse => println!("App key injected."),
 		r => {
 			return Err(Error::UnexpectedProtocolMsgResponse(format!("{r:?}")));
 		}
@@ -1783,7 +1951,14 @@ pub(crate) fn post_share<P: AsRef<Path>>(
 
 	let req = ProtocolMsg::ProvisionRequest { share, approval };
 	let is_reconstructed = match request::post(uri, &req).unwrap() {
-		ProtocolMsg::ProvisionResponse { reconstructed } => reconstructed,
+		ProtocolMsg::ProvisionResponse { reconstructed, awaiting_app_key } => {
+			if awaiting_app_key {
+				println!(
+					"The enclave waits for its app key (mint-app-key or inject-app-key)."
+				);
+			}
+			reconstructed
+		}
 		r => panic!("Unexpected response: {r:?}"),
 	};
 
@@ -2125,7 +2300,7 @@ pub(crate) fn dangerous_dev_boot<P: AsRef<Path>>(
 	assert!(
 		matches!(
 			resp1,
-			ProtocolMsg::ProvisionResponse { reconstructed: false }
+			ProtocolMsg::ProvisionResponse { reconstructed: false, .. }
 		),
 		"{resp1:?}"
 	);
@@ -2140,7 +2315,7 @@ pub(crate) fn dangerous_dev_boot<P: AsRef<Path>>(
 	let resp2 = request::post(uri, &req2).unwrap();
 	assert!(matches!(
 		resp2,
-		ProtocolMsg::ProvisionResponse { reconstructed: true }
+		ProtocolMsg::ProvisionResponse { reconstructed: true, .. }
 	));
 
 	println!("Enclave is provisioned!");
@@ -2856,6 +3031,7 @@ mod tests {
 			share_set: manifest.share_set,
 			enclave: manifest.enclave,
 			dns,
+			app_key_minter: None,
 		})
 	}
 
@@ -2915,6 +3091,7 @@ mod tests {
 				share_set: manifest.share_set,
 				enclave: manifest.enclave,
 				dns: None,
+				app_key_minter: None,
 			},
 			manifest_set_approvals: vec![],
 			share_set_approvals: vec![],
@@ -3879,6 +4056,7 @@ mod tests {
 				share_set: manifest.share_set,
 				enclave: manifest.enclave,
 				dns: None,
+				app_key_minter: None,
 			};
 			fs::write(&json_path, qos_json::to_vec(&v2).unwrap()).unwrap();
 
@@ -3921,6 +4099,7 @@ mod tests {
 				share_set: manifest.share_set,
 				enclave: manifest.enclave,
 				dns: None,
+				app_key_minter: None,
 			};
 			let v2_envelope = ManifestEnvelopeV2 {
 				manifest: v2_manifest,

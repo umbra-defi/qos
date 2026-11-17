@@ -176,6 +176,17 @@ impl VersionedManifest {
 		}
 	}
 
+	/// Return the hybrid public key allowed to order this manifest's app key
+	/// minted, or `None` when the manifest has no app key. Only v2 manifests
+	/// can name one.
+	#[must_use]
+	pub fn app_key_minter(&self) -> Option<&[u8]> {
+		match self {
+			Self::V2(manifest) => manifest.app_key_minter.as_deref(),
+			Self::V1(_) | Self::V0(_) => None,
+		}
+	}
+
 	/// Return the expected pivot binary hash.
 	#[must_use]
 	pub fn pivot_hash(&self) -> &Hash256 {
@@ -434,6 +445,16 @@ impl VersionedManifestEnvelope {
 		}
 	}
 
+	/// Return the embedded manifest's app key minter, or `None` when it has
+	/// no app key. Only v2 manifests can name one.
+	#[must_use]
+	pub fn app_key_minter(&self) -> Option<&[u8]> {
+		match self {
+			Self::V2(e) => e.manifest.app_key_minter.as_deref(),
+			Self::V1(_) | Self::V0(_) => None,
+		}
+	}
+
 	/// Verify manifest-set approvals against the embedded manifest hash and
 	/// threshold policy.
 	///
@@ -569,6 +590,7 @@ mod tests {
 				qos_commit: "commit".to_string(),
 			},
 			dns: None,
+			app_key_minter: None,
 		}
 	}
 

@@ -62,6 +62,14 @@ pub struct ManifestV2 {
 	/// DNS resolver configuration for the enclave.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub dns: Option<DnsConfig>,
+	/// Hybrid public key whose signed order makes one boot mint this
+	/// manifest's app key. Absent, the manifest has no app key.
+	#[serde(
+		default,
+		skip_serializing_if = "Option::is_none",
+		with = "qos_hex::serde::option"
+	)]
+	pub app_key_minter: Option<Vec<u8>>,
 }
 
 /// Accept only `"v2"`. [`ManifestVersion`] doubles as the schema selector for

@@ -744,6 +744,10 @@ pub(in crate::protocol::services) fn put_manifest_and_pivot(
 	if !manifest_envelope.share_set_approvals().is_empty() {
 		return Err(ProtocolError::BadShareSetApprovals);
 	}
+	if let Some(minter) = manifest_envelope.app_key_minter() {
+		HybridPublic::from_bytes(minter)
+			.map_err(|_| ProtocolError::InvalidAppKeyMinter)?;
+	}
 	let actual_hash = sha_256(pivot);
 	let expected_hash = *manifest_envelope.pivot_hash();
 	if actual_hash != expected_hash {
