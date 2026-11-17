@@ -1,5 +1,6 @@
 //! Attestation specific logic
 
+use super::ATTESTED_KEY_BINDING_LEN;
 use crate::types;
 
 /// Attestation error.
@@ -105,6 +106,11 @@ pub enum AttestError {
 		/// Actual value as hex string.
 		actual: String,
 	},
+	/// The attestation doc's `public_key` is not a 64-byte key binding.
+	PubKeyNotBinding {
+		/// Length of the `public_key` field.
+		len: usize,
+	},
 }
 
 impl From<webpki::Error> for AttestError {
@@ -201,6 +207,11 @@ impl std::fmt::Display for AttestError {
 					"different PCR{index}: expected {expected}, got {actual}"
 				)
 			}
+			Self::PubKeyNotBinding { len } => write!(
+				f,
+				"attestation document public_key holds {len} bytes, not a \
+				 {ATTESTED_KEY_BINDING_LEN}-byte key binding"
+			),
 		}
 	}
 }

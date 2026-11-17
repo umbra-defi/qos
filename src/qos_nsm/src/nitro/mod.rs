@@ -63,10 +63,17 @@ pub const PCR_SHA384_LEN: usize = 48;
 pub const MANIFEST_COMMITMENT_INITIAL_PCR: [u8; PCR_SHA384_LEN] =
 	[0u8; PCR_SHA384_LEN];
 
+/// Length of the ephemeral key binding an attestation document's
+/// `public_key` field and the setup and live commitments carry: a SHA-512
+/// digest of the hybrid key, which is too long for the NSM request.
+pub const ATTESTED_KEY_BINDING_LEN: usize = 64;
+
+// v2: the commitment carries the ephemeral key's 64-byte binding, not the key
+// itself, so a verifier still computing v1 over a raw key fails outright.
 const SETUP_MANIFEST_PCR_COMMITMENT_DOMAIN: &str =
-	"qos-setup-manifest-pcr-commitment-v1";
+	"qos-setup-manifest-pcr-commitment-v2";
 const LIVE_MANIFEST_PCR_COMMITMENT_DOMAIN: &str =
-	"qos-live-manifest-pcr-commitment-v1";
+	"qos-live-manifest-pcr-commitment-v2";
 const MANIFEST_ONLY_PCR_COMMITMENT_DOMAIN: &str =
 	"qos-manifest-pcr-commitment-v1";
 
@@ -138,17 +145,17 @@ struct ManifestPcrCommitmentPreimage<'a> {
 	#[serde(with = "qos_hex::serde")]
 	manifest_hash: &'a [u8],
 	#[serde(with = "qos_hex::serde")]
-	ephemeral_public_key: &'a [u8],
+	ephemeral_key_binding: &'a [u8],
 }
 
 fn manifest_pcr_commitment_preimage<K: ManifestCommitmentKind>(
 	manifest_hash: &[u8],
-	ephemeral_public_key: &[u8],
+	ephemeral_key_binding: &[u8],
 ) -> Vec<u8> {
 	qos_json::to_vec(&ManifestPcrCommitmentPreimage {
 		domain: K::DOMAIN,
 		manifest_hash,
-		ephemeral_public_key,
+		ephemeral_key_binding,
 	})
 	.expect("manifest PCR commitment preimage only contains strings")
 }
@@ -281,6 +288,9 @@ pub fn verify_attestation_doc_manifest_commitment<K: ManifestCommitmentKind>(
 		.public_key
 		.as_ref()
 		.ok_or(AttestError::MissingPubKey)?;
+	if public_key.len() != ATTESTED_KEY_BINDING_LEN {
+		return Err(AttestError::PubKeyNotBinding { len: public_key.len() });
+	}
 	let expected = expected_manifest_commitment_pcr::<K>(
 		manifest_hash,
 		public_key.as_ref(),
@@ -822,7 +832,7 @@ mod test {
 
 		assert_eq!(
 			String::from_utf8(preimage).unwrap(),
-			r#"{"domain":"qos-setup-manifest-pcr-commitment-v1","ephemeralPublicKey":"0304","manifestHash":"0102"}"#
+			r#"{"domain":"qos-setup-manifest-pcr-commitment-v2","ephemeralKeyBinding":"0304","manifestHash":"0102"}"#
 		);
 	}
 
@@ -851,13 +861,13 @@ mod test {
 	fn manifest_commitment_pcr_test_vectors() {
 		// Test vectors documented in docs/attestation_verification.md.
 		let manifest_hash = [1u8; 32];
-		let public_key = [3u8; 65];
+		let public_key = [3u8; ATTESTED_KEY_BINDING_LEN];
 
 		let setup_commitment =
 			manifest_pcr_commitment::<Setup>(&manifest_hash, &public_key);
 		assert_eq!(
 			qos_hex::encode(&setup_commitment),
-			"e5997907ea1b7204c7a8890ae76d8d70b05f37d3bdda729d6b4c1febc55c7f3ecae51ce4746f136c07527c00b1298876"
+			"2a8793fc212a0eddf0dbfb2f6c8df0ae0ed5bc46eaeb4a3cbcbff6bb44b80bd474e2ef8f6513feba3a68ad6ffd6de774"
 		);
 		let setup_pcr = expected_manifest_commitment_pcr::<Setup>(
 			&manifest_hash,
@@ -866,14 +876,14 @@ mod test {
 		.unwrap();
 		assert_eq!(
 			qos_hex::encode(&setup_pcr),
-			"f3e7209964e7d8f4915cc6038ec22d6dcdfcbea625b98f8a1a338e24407f122803f79be43ab65a4c4ad32a52b2c6ab4e"
+			"dd2934f3e679bcef8438a1f5c9b1a786ad0ddfe225ed8fb021929d487bb50acc525eb02a331a3b5e42915d51473a727a"
 		);
 
 		let live_commitment =
 			manifest_pcr_commitment::<Live>(&manifest_hash, &public_key);
 		assert_eq!(
 			qos_hex::encode(&live_commitment),
-			"47a6e41fa6bbd0e9f46829dbcaf359829934b4fdbbcce099e508aab4127332c5812f385a4e9133ec3db812aa00be2b3f"
+			"832726514cdbd2199d7fa96244f343582d0f4f3d3eab57704735db515b764328ae145e90606aae873d0515cb6c3578fa"
 		);
 		let live_pcr = expected_manifest_commitment_pcr::<Live>(
 			&manifest_hash,
@@ -882,7 +892,7 @@ mod test {
 		.unwrap();
 		assert_eq!(
 			qos_hex::encode(&live_pcr),
-			"afb56dbbe66008a5b6f190b81cf4e63603e15bf24bc6a93a135b82f8b1bb72ac4d3a0a191a20b3fd77e5b9333677b7fc"
+			"37b1440b7608c54e46f67f58cad0a5fdb895f1b87468177d1b33f5cc7decf365ed11cc238565813cdf0314676cd00d2d"
 		);
 
 		assert_eq!(setup_commitment.pcr_index(), 16);
@@ -926,7 +936,7 @@ mod test {
 		let manifest_hash = [1u8; 32];
 		let mut attestation_doc = manifest_only_commitment_attestation_doc(
 			&manifest_hash,
-			&[3u8; 65],
+			&[3u8; ATTESTED_KEY_BINDING_LEN],
 		);
 		attestation_doc.public_key = None;
 
@@ -939,8 +949,10 @@ mod test {
 
 	#[test]
 	fn verify_attestation_doc_manifest_only_commitment_rejects_invalid_input() {
-		let mut attestation_doc =
-			manifest_only_commitment_attestation_doc(&[1u8; 32], &[3u8; 65]);
+		let mut attestation_doc = manifest_only_commitment_attestation_doc(
+			&[1u8; 32],
+			&[3u8; ATTESTED_KEY_BINDING_LEN],
+		);
 
 		let err = verify_attestation_doc_manifest_only_commitment(
 			&attestation_doc,
@@ -965,7 +977,7 @@ mod test {
 	#[test]
 	fn verify_attestation_doc_manifest_commitment_works() {
 		let manifest_hash = [1u8; 32];
-		let public_key = [3u8; 65];
+		let public_key = [3u8; ATTESTED_KEY_BINDING_LEN];
 		let attestation_doc = manifest_commitment_attestation_doc::<Setup>(
 			&manifest_hash,
 			&public_key,
@@ -979,9 +991,30 @@ mod test {
 	}
 
 	#[test]
+	fn verify_attestation_doc_manifest_commitment_rejects_a_raw_key() {
+		let manifest_hash = [1u8; 32];
+		let raw_key = [3u8; 65];
+		let attestation_doc = manifest_commitment_attestation_doc::<Setup>(
+			&manifest_hash,
+			&raw_key,
+		);
+
+		assert!(
+			matches!(
+				verify_attestation_doc_manifest_commitment::<Setup>(
+					&attestation_doc,
+					&manifest_hash,
+				),
+				Err(AttestError::PubKeyNotBinding { len: 65 })
+			),
+			"a document carrying a raw key, as an unmigrated enclave writes, must fail outright"
+		);
+	}
+
+	#[test]
 	fn verify_attestation_doc_manifest_commitment_live_works() {
 		let manifest_hash = [1u8; 32];
-		let public_key = [3u8; 65];
+		let public_key = [3u8; ATTESTED_KEY_BINDING_LEN];
 		let attestation_doc = manifest_commitment_attestation_doc::<Live>(
 			&manifest_hash,
 			&public_key,
@@ -997,7 +1030,7 @@ mod test {
 	#[test]
 	fn verify_attestation_doc_manifest_commitment_rejects_wrong_kind() {
 		let manifest_hash = [1u8; 32];
-		let public_key = [3u8; 65];
+		let public_key = [3u8; ATTESTED_KEY_BINDING_LEN];
 		let attestation_doc = manifest_commitment_attestation_doc::<Setup>(
 			&manifest_hash,
 			&public_key,
@@ -1017,7 +1050,7 @@ mod test {
 	#[test]
 	fn verify_attestation_doc_manifest_commitment_rejects_live_as_setup() {
 		let manifest_hash = [1u8; 32];
-		let public_key = [3u8; 65];
+		let public_key = [3u8; ATTESTED_KEY_BINDING_LEN];
 		let attestation_doc = manifest_commitment_attestation_doc::<Live>(
 			&manifest_hash,
 			&public_key,
@@ -1037,7 +1070,7 @@ mod test {
 	#[test]
 	fn verify_attestation_doc_against_manifest_rejects_bad_pcr2() {
 		let manifest_hash = [1u8; 32];
-		let public_key = [3u8; 65];
+		let public_key = [3u8; ATTESTED_KEY_BINDING_LEN];
 		let attestation_doc = manifest_commitment_attestation_doc::<Setup>(
 			&manifest_hash,
 			&public_key,
@@ -1061,12 +1094,13 @@ mod test {
 	#[test]
 	fn verify_attestation_doc_manifest_commitment_rejects_mismatched_key() {
 		let manifest_hash = [1u8; 32];
-		let public_key = [3u8; 65];
+		let public_key = [3u8; ATTESTED_KEY_BINDING_LEN];
 		let mut attestation_doc = manifest_commitment_attestation_doc::<Setup>(
 			&manifest_hash,
 			&public_key,
 		);
-		attestation_doc.public_key = Some(ByteBuf::from(vec![4u8; 65]));
+		attestation_doc.public_key =
+			Some(ByteBuf::from(vec![4u8; ATTESTED_KEY_BINDING_LEN]));
 
 		let err = verify_attestation_doc_manifest_commitment::<Setup>(
 			&attestation_doc,
@@ -1082,7 +1116,7 @@ mod test {
 	#[test]
 	fn verify_attestation_doc_manifest_commitment_rejects_missing_range_pcr() {
 		let manifest_hash = [1u8; 32];
-		let public_key = [3u8; 65];
+		let public_key = [3u8; ATTESTED_KEY_BINDING_LEN];
 		let mut attestation_doc = manifest_commitment_attestation_doc::<Setup>(
 			&manifest_hash,
 			&public_key,
