@@ -1,11 +1,11 @@
 [package]
-name = "qos_json"
+name = "umbra_qos_json"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Canonical JSON encoding for deterministic JSON"
-repository = "https://github.com/tkhq/qos"
+repository = "https://github.com/umbra-defi/qos"
 readme = "README.md"
 keywords = ["quorumos", "serde", "encoding"]
 categories = ["encoding"]
@@ -21,3 +21,7 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 qos_hex = { workspace = true, features = ["serde"] }
+
+[lib]
+name = "qos_json"
+path = "src/lib.rs"

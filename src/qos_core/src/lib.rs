@@ -19,6 +19,9 @@ pub const EGRESS_VSOCK_PORT: u32 = 1000;
 /// Path to Quorum Key secret.
 pub const QUORUM_FILE: &str = "/qos.quorum.key";
 
+/// Path to the app key secret.
+pub const APP_KEY_FILE: &str = "/qos.app.key";
+
 /// Path to Pivot binary.
 pub const PIVOT_FILE: &str = "/qos.pivot.bin";
 

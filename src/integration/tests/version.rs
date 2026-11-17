@@ -83,6 +83,7 @@ async fn version_request_returns_version_and_commit() -> Result<(), io::Error> {
 	let qos_core_handles = Handles::new(
 		eph.to_string_lossy().into_owned(),
 		secret.to_string_lossy().into_owned(),
+		format!("{}.app", secret.to_string_lossy()),
 		manifest.to_string_lossy().into_owned(),
 		PIVOT_OK_PATH.to_string(),
 	);

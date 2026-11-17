@@ -449,7 +449,7 @@ impl VersionedManifestEnvelope {
 
 		for approval in self.manifest_set_approvals() {
 			let member_pub_key =
-				qos_p256::P256Public::from_bytes(&approval.member.pub_key)?;
+				qos_hybrid::HybridPublic::from_bytes(&approval.member.pub_key)?;
 			let is_valid_signature = member_pub_key
 				.verify(&manifest_hash, &approval.signature)
 				.is_ok();
@@ -521,7 +521,7 @@ impl VersionedManifestEnvelope {
 
 #[cfg(test)]
 mod tests {
-	use qos_p256::P256Pair;
+	use qos_hybrid::HybridPair;
 
 	use super::*;
 	use crate::protocol::{
@@ -532,7 +532,7 @@ mod tests {
 		},
 	};
 
-	fn sample_member(pair: &P256Pair) -> QuorumMember {
+	fn sample_member(pair: &HybridPair) -> QuorumMember {
 		QuorumMember {
 			alias: "member-1".to_string(),
 			pub_key: pair.public_key().to_bytes(),
@@ -640,7 +640,7 @@ mod tests {
 
 	#[test]
 	fn v2_manifest_omits_dns_when_absent() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let manifest = sample_v2_manifest(sample_member(&pair));
 		let value = serde_json::to_value(&manifest).unwrap();
 
@@ -649,7 +649,7 @@ mod tests {
 
 	#[test]
 	fn v2_manifest_round_trips_dns_resolvers() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let mut manifest = sample_v2_manifest(sample_member(&pair));
 		manifest.dns = Some(DnsConfig {
 			resolvers: vec![
@@ -668,7 +668,7 @@ mod tests {
 
 	#[test]
 	fn v2_manifest_rejects_invalid_dns_resolver() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let mut value =
 			serde_json::to_value(sample_v2_manifest(sample_member(&pair)))
 				.unwrap();
@@ -681,7 +681,7 @@ mod tests {
 
 	#[test]
 	fn v2_manifest_rejects_a_version_other_than_v2() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let manifest = sample_v2_manifest(sample_member(&pair));
 		let mut value = serde_json::to_value(&manifest).unwrap();
 
@@ -706,7 +706,7 @@ mod tests {
 
 	#[test]
 	fn declared_version_never_falls_back_to_an_older_schema() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let member = sample_member(&pair);
 
 		let mut v1 =
@@ -744,7 +744,7 @@ mod tests {
 
 	#[test]
 	fn enveloped_declared_version_never_falls_back_to_an_older_schema() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let member = sample_member(&pair);
 
 		let envelope = ManifestEnvelope {
@@ -771,7 +771,7 @@ mod tests {
 
 	#[test]
 	fn versioned_manifest_dns_config_is_v2_only() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let member = sample_member(&pair);
 		let mut v2 = sample_v2_manifest(member.clone());
 		v2.dns =
@@ -795,7 +795,7 @@ mod tests {
 
 	#[test]
 	fn v2_manifest_decode_and_hash_uses_canonical_json() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let manifest = sample_v2_manifest(sample_member(&pair));
 		let bytes = qos_json::to_vec(&manifest).unwrap();
 
@@ -806,7 +806,7 @@ mod tests {
 
 	#[test]
 	fn v2_envelope_decode_and_approval_verification_uses_json_hash() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let member = sample_member(&pair);
 		let manifest = sample_v2_manifest(member.clone());
 		let manifest_hash = canonical_json_hash(&manifest);
@@ -829,7 +829,7 @@ mod tests {
 
 	#[test]
 	fn versioned_check_approvals_rejects_same_key_under_different_aliases() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let alias_a = QuorumMember {
 			alias: "alias-a".to_string(),
 			pub_key: pair.public_key().to_bytes(),
@@ -862,7 +862,7 @@ mod tests {
 
 	#[test]
 	fn hash_dispatch_uses_borsh_for_v1_v0() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let member = sample_member(&pair);
 		let v1 = sample_v1_manifest(member.clone());
 		let v0 = sample_v0_manifest(member);
@@ -879,7 +879,7 @@ mod tests {
 
 	#[test]
 	fn borsh_serialization_rejects_v2_variants() {
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		let member = sample_member(&pair);
 		let v2_manifest = sample_v2_manifest(member.clone());
 		let v2_envelope = ManifestEnvelopeV2 {

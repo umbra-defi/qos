@@ -9,16 +9,14 @@ const MOCK_PRIMARY_SEED_PATH: &str = "./tests/mock/primary.secret.keep";
 const MOCK_PRIMARY_PUB_PATH: &str = "./tests/mock/primary.pub";
 const QOS_CLIENT_PATH: &str =
 	concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/qos_client");
-// If this is updated there is a breaking change to the commands api
-const EXPECTED_SIGNATURE: &str = "36c7f22c3831a32b8c8a9e823641e7df591c6e92848e7baa54f66d65963d15eaf02abbf5f01f99a8dddfe7a35453a4df486a708ffa3ef2d8159d4d0763f5ee89";
 
 #[test]
-fn p256_sign_verify_roundtrip() {
-	let tmp = PathWrapper::from("/tmp/p256_sign_verify_roundtrip");
+fn hybrid_sign_verify_roundtrip() {
+	let tmp = PathWrapper::from("/tmp/hybrid_sign_verify_roundtrip");
 	std::fs::create_dir_all(&*tmp).unwrap();
 
-	let payload_path = "/tmp/p256_sign_verify_roundtrip/payload";
-	let signature_path = "/tmp/p256_sign_verify_roundtrip/signature";
+	let payload_path = "/tmp/hybrid_sign_verify_roundtrip/payload";
+	let signature_path = "/tmp/hybrid_sign_verify_roundtrip/signature";
 
 	std::fs::write(payload_path, DATA).unwrap();
 	// Sanity check the signature output doesn't already exist
@@ -26,7 +24,7 @@ fn p256_sign_verify_roundtrip() {
 
 	assert!(
 		Command::new(QOS_CLIENT_PATH)
-			.arg("p256-sign")
+			.arg("hybrid-sign")
 			.arg("--payload-path")
 			.arg(payload_path)
 			.arg("--signature-path")
@@ -41,11 +39,15 @@ fn p256_sign_verify_roundtrip() {
 	);
 
 	let signature = std::fs::read_to_string(signature_path).unwrap();
-	assert_eq!(EXPECTED_SIGNATURE, signature);
+	assert_eq!(
+		qos_hex::decode(&signature).unwrap().len(),
+		qos_hybrid::SIGNATURE_LEN,
+		"hybrid-sign must write one hex ML-DSA-87 signature"
+	);
 
 	assert!(
 		Command::new(QOS_CLIENT_PATH)
-			.arg("p256-verify")
+			.arg("hybrid-verify")
 			.arg("--payload-path")
 			.arg(payload_path)
 			.arg("--signature-path")
@@ -61,22 +63,22 @@ fn p256_sign_verify_roundtrip() {
 }
 
 #[test]
-fn p256_asymmetric_encrypt_decrypt_roundtrip() {
+fn hybrid_asymmetric_encrypt_decrypt_roundtrip() {
 	let tmp =
-		PathWrapper::from("/tmp/p256_asymmetric_encrypt_decrypt_roundtrip");
+		PathWrapper::from("/tmp/hybrid_asymmetric_encrypt_decrypt_roundtrip");
 	std::fs::create_dir_all(&*tmp).unwrap();
 
 	let plaintext_input_path =
-		"/tmp/p256_asymmetric_encrypt_decrypt_roundtrip/plaintext_input";
+		"/tmp/hybrid_asymmetric_encrypt_decrypt_roundtrip/plaintext_input";
 	std::fs::write(plaintext_input_path, DATA.as_bytes()).unwrap();
 	let ciphertext_path =
-		"/tmp/p256_asymmetric_encrypt_decrypt_roundtrip/ciphertext";
+		"/tmp/hybrid_asymmetric_encrypt_decrypt_roundtrip/ciphertext";
 	// Sanity check the ciphertext output doesn't already exist
 	assert!(!PathBuf::from(ciphertext_path).exists());
 
 	assert!(
 		Command::new(QOS_CLIENT_PATH)
-			.arg("p256-asymmetric-encrypt")
+			.arg("hybrid-asymmetric-encrypt")
 			.arg("--plaintext-path")
 			.arg(plaintext_input_path)
 			.arg("--ciphertext-path")
@@ -91,12 +93,12 @@ fn p256_asymmetric_encrypt_decrypt_roundtrip() {
 	);
 
 	let plaintext_output_path =
-		"/tmp/p256_asymmetric_encrypt_decrypt_roundtrip/plaintext_output";
+		"/tmp/hybrid_asymmetric_encrypt_decrypt_roundtrip/plaintext_output";
 	assert!(!PathBuf::from(plaintext_output_path).exists());
 
 	assert!(
 		Command::new(QOS_CLIENT_PATH)
-			.arg("p256-asymmetric-decrypt")
+			.arg("hybrid-asymmetric-decrypt")
 			.arg("--plaintext-path")
 			.arg(plaintext_output_path)
 			.arg("--ciphertext-path")
@@ -114,10 +116,10 @@ fn p256_asymmetric_encrypt_decrypt_roundtrip() {
 	assert_eq!(decrypted_bytes, DATA.as_bytes());
 
 	let hex_plaintext_output_path =
-		"/tmp/p256_asymmetric_encrypt_decrypt_roundtrip/plaintext_output";
+		"/tmp/hybrid_asymmetric_encrypt_decrypt_roundtrip/plaintext_output";
 	assert!(
 		Command::new(QOS_CLIENT_PATH)
-			.arg("p256-asymmetric-decrypt")
+			.arg("hybrid-asymmetric-decrypt")
 			.arg("--plaintext-path")
 			.arg(hex_plaintext_output_path)
 			.arg("--ciphertext-path")

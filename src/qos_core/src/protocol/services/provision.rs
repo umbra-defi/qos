@@ -107,13 +107,13 @@ pub(in crate::protocol) fn provision(
 	let master_seed = state.provisioner.build()?;
 	state.provisioner.clear();
 
-	let master_seed: Zeroizing<[u8; qos_p256::MASTER_SEED_LEN]> =
+	let master_seed: Zeroizing<[u8; qos_hybrid::MASTER_SEED_LEN]> =
 		Zeroizing::new(
 			master_seed[..]
 				.try_into()
 				.map_err(|_| ProtocolError::IncorrectSecretLen)?,
 		);
-	let pair = qos_p256::P256Pair::from_master_seed(&master_seed)?;
+	let pair = qos_hybrid::HybridPair::from_master_seed(&master_seed)?;
 	let public_key_bytes = pair.public_key().to_bytes();
 
 	if public_key_bytes != manifest.namespace().quorum_key {
@@ -126,6 +126,10 @@ pub(in crate::protocol) fn provision(
 	// an encryption target (boot standard flow encrypts quorum key shares to it.)
 	let live_ephemeral_key = state.take_pending_live_ephemeral_key()?;
 	state.handles.rotate_ephemeral_key(&live_ephemeral_key)?;
+
+	// A share-provisioned boot is the one the share set picked, so it mints
+	// the app key the rest of this manifest's enclaves receive by key forward.
+	state.handles.put_app_key(&qos_hybrid::HybridPair::generate()?)?;
 
 	// Write the quorum key to the file system.
 	// Note: it's important to do this _last_, because the enclave will
@@ -141,8 +145,8 @@ mod test {
 	use std::path::Path;
 
 	use qos_crypto::{sha_256, shamir::shares_generate};
+	use qos_hybrid::HybridPair;
 	use qos_nsm::mock::MockNsm;
-	use qos_p256::P256Pair;
 	use qos_test_primitives::PathWrapper;
 	use zeroize::Zeroizing;
 
@@ -162,9 +166,9 @@ mod test {
 	};
 
 	struct Setup {
-		quorum_pair: P256Pair,
-		eph_pair: P256Pair,
-		live_eph_pair: P256Pair,
+		quorum_pair: HybridPair,
+		eph_pair: HybridPair,
+		live_eph_pair: HybridPair,
 		threshold: usize,
 		state: ProtocolState,
 		approvals: Vec<Approval>,
@@ -173,25 +177,27 @@ mod test {
 	fn setup(
 		eph_file: &Path,
 		quorum_file: &Path,
+		app_key_file: &Path,
 		manifest_file: &Path,
 	) -> Setup {
 		let handles = Handles::new(
 			eph_file.display().to_string(),
 			quorum_file.display().to_string(),
+			app_key_file.display().to_string(),
 			manifest_file.display().to_string(),
 			"pivot".to_string(),
 		);
 		// 1) Create and write eph key
-		let eph_pair = P256Pair::generate().unwrap();
-		let live_eph_pair = P256Pair::generate().unwrap();
+		let eph_pair = HybridPair::generate().unwrap();
+		let live_eph_pair = HybridPair::generate().unwrap();
 		handles.put_ephemeral_key(&eph_pair).unwrap();
 		// 2) Create and write manifest with threshold and quorum key
-		let quorum_pair = P256Pair::generate().unwrap();
+		let quorum_pair = HybridPair::generate().unwrap();
 		let threshold = 3usize;
 		let pivot = b"this is a pivot binary";
 
 		let members: Vec<_> = (0..4)
-			.map(|_| P256Pair::generate().unwrap())
+			.map(|_| HybridPair::generate().unwrap())
 			.enumerate()
 			.map(|(i, pair)| {
 				let member = QuorumMember {
@@ -274,6 +280,7 @@ mod test {
 	#[test]
 	fn provision_works() {
 		let quorum_file = PathWrapper::from("./provision_works.quorum.key");
+		let app_key_file = PathWrapper::from("./provision_works.app.key");
 		let eph_file = PathWrapper::from("./provision_works.eph.key");
 		let manifest_file = PathWrapper::from("./provision_works.manifest");
 
@@ -284,7 +291,7 @@ mod test {
 			threshold,
 			mut state,
 			approvals,
-		} = setup(&eph_file, &quorum_file, &manifest_file);
+		} = setup(&eph_file, &quorum_file, &app_key_file, &manifest_file);
 
 		// 4) Create shards and encrypt them to eph key
 		let quorum_key = quorum_pair.to_master_seed();
@@ -318,6 +325,10 @@ mod test {
 
 		assert_eq!(quorum_key, quorum_pair.to_master_seed_hex().as_slice());
 
+		// The share-provisioned boot mints the app key before the quorum key
+		// file starts the pivot.
+		assert!(state.handles.get_app_key().is_ok());
+
 		// Make sure the EK is persisted
 		assert!(Path::new(&*eph_file).exists());
 
@@ -344,15 +355,17 @@ mod test {
 			PathWrapper::from("./provision_rejects_the_wrong_key.eph.key");
 		let quorum_file =
 			PathWrapper::from("./provision_rejects_the_wrong_key.quorum.key");
+		let app_key_file =
+			PathWrapper::from("./provision_rejects_the_wrong_key.app.key");
 		let manifest_file =
 			PathWrapper::from("./provision_rejects_the_wrong_key.manifest");
 
 		let Setup { eph_pair, threshold, mut state, approvals, .. } =
-			setup(&eph_file, &quorum_file, &manifest_file);
+			setup(&eph_file, &quorum_file, &app_key_file, &manifest_file);
 
 		// 4) Create shards of a RANDOM KEY and encrypt them to eph key
 		let random_key = Zeroizing::new(
-			P256Pair::generate().unwrap().to_master_seed().to_vec(),
+			HybridPair::generate().unwrap().to_master_seed().to_vec(),
 		);
 		let encrypted_shares: Vec<_> =
 			shares_generate(&random_key, 4, threshold)
@@ -393,6 +406,9 @@ mod test {
 		let quorum_file = PathWrapper::from(
 			"./provision_rejects_if_a_shard_is_invalid.quorum.key",
 		);
+		let app_key_file = PathWrapper::from(
+			"./provision_rejects_if_a_shard_is_invalid.app.key",
+		);
 		let manifest_file = PathWrapper::from(
 			"./provision_rejects_if_a_shard_is_invalid.manifest",
 		);
@@ -403,7 +419,7 @@ mod test {
 			mut state,
 			approvals,
 			..
-		} = setup(&eph_file, &quorum_file, &manifest_file);
+		} = setup(&eph_file, &quorum_file, &app_key_file, &manifest_file);
 
 		// 4) Create shards and encrypt them to eph key
 		let quorum_key = quorum_pair.to_master_seed();
@@ -449,6 +465,9 @@ mod test {
 		let quorum_file = PathWrapper::from(
 			"./provisions_rejects_if_an_approval_is_invalid.quorum.key",
 		);
+		let app_key_file = PathWrapper::from(
+			"./provisions_rejects_if_an_approval_is_invalid.app.key",
+		);
 		let manifest_file = PathWrapper::from(
 			"./provisions_rejects_if_an_approval_is_invalid.manifest",
 		);
@@ -460,7 +479,7 @@ mod test {
 			mut state,
 			mut approvals,
 			..
-		} = setup(&eph_file, &quorum_file, &manifest_file);
+		} = setup(&eph_file, &quorum_file, &app_key_file, &manifest_file);
 
 		let quorum_key = quorum_pair.to_master_seed();
 		let mut encrypted_shares: Vec<_> =
@@ -490,6 +509,9 @@ mod test {
 		let quorum_file = PathWrapper::from(
 			"./provision_rejects_if_approval_is_not_from_share_set_member.quorum.key",
 		);
+		let app_key_file = PathWrapper::from(
+			"./provision_rejects_if_approval_is_not_from_share_set_member.app.key",
+		);
 		let manifest_file = PathWrapper::from(
 			"./provision_rejects_if_approval_is_not_from_share_set_member.manifest",
 		);
@@ -501,7 +523,7 @@ mod test {
 			mut state,
 			mut approvals,
 			..
-		} = setup(&eph_file, &quorum_file, &manifest_file);
+		} = setup(&eph_file, &quorum_file, &app_key_file, &manifest_file);
 
 		let quorum_key = quorum_pair.to_master_seed();
 		let mut encrypted_shares: Vec<_> =
@@ -514,7 +536,7 @@ mod test {
 		let manifest =
 			state.handles.get_manifest_envelope().unwrap().manifest();
 		let mut approval = approvals.remove(0);
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 
 		// Change the member so that are not recognized as part of the set
 		approval.member.pub_key = pair.public_key().to_bytes();
@@ -538,6 +560,9 @@ mod test {
 		let quorum_file = PathWrapper::from(
 			"./provision_rejects_with_signature_error_if_approval_is_not_from_share_set_member_and_bad_signature.quorum.key",
 		);
+		let app_key_file = PathWrapper::from(
+			"./provision_rejects_with_signature_error_if_approval_is_not_from_share_set_member_and_bad_signature.app.key",
+		);
 		let manifest_file = PathWrapper::from(
 			"./provision_rejects_with_signature_error_if_approval_is_not_from_share_set_member_and_bad_signature.manifest",
 		);
@@ -549,7 +574,7 @@ mod test {
 			mut state,
 			mut approvals,
 			..
-		} = setup(&eph_file, &quorum_file, &manifest_file);
+		} = setup(&eph_file, &quorum_file, &app_key_file, &manifest_file);
 
 		let quorum_key = quorum_pair.to_master_seed();
 		let mut encrypted_shares: Vec<_> =
@@ -560,7 +585,7 @@ mod test {
 				.collect();
 
 		let mut approval = approvals.remove(0);
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 
 		// Change the member so that are not recognized as part of the set
 		approval.member.pub_key = pair.public_key().to_bytes();

@@ -1,6 +1,6 @@
 use std::{
 	fs::{self, File},
-	io::{self, BufRead, BufReader, Write},
+	io::{self, BufRead, Write},
 	mem,
 	net::IpAddr,
 	path::{Path, PathBuf},
@@ -22,10 +22,11 @@ use qos_core::protocol::{
 			VersionedManifestEnvelope,
 		},
 		genesis::{GenesisOutput, GenesisSet},
-		key::EncryptedQuorumKey,
+		key::{AppKeyMode, EncryptedQuorumKey},
 	},
 };
 use qos_crypto::{sha_256, sha_384, sha_512};
+use qos_hybrid::{HybridError, HybridPair, HybridPublic};
 use qos_nsm::{
 	nitro::{
 		AWS_ROOT_CERT_PEM, ManifestAttestationInput, attestation_doc_from_der,
@@ -35,7 +36,6 @@ use qos_nsm::{
 	},
 	types::NsmResponse,
 };
-use qos_p256::{P256Error, P256Pair, P256Public};
 use zeroize::Zeroizing;
 
 use super::DisplayType;
@@ -55,12 +55,6 @@ const DANGEROUS_DEV_BOOT_MEMBER: &str = "DANGEROUS_DEV_BOOT_MEMBER";
 const DANGEROUS_DEV_BOOT_NAMESPACE: &str =
 	"DANGEROUS_DEV_BOOT_MEMBER_NAMESPACE";
 
-#[cfg(not(feature = "smartcard"))]
-pub(crate) const SMARTCARD_FEAT_DISABLED_MSG: &str = "The \"smartcard\" feature must be enabled to use YubiKey related functionality.";
-
-const ENTER_PIN_PROMPT: &str = "Enter your pin: ";
-const TAP_MSG: &str = "Tap your YubiKey";
-
 type Manifest = ManifestV1;
 type ManifestEnvelope = ManifestEnvelopeV1;
 type PivotConfig = PivotConfigV1;
@@ -68,34 +62,14 @@ type PivotConfig = PivotConfigV1;
 /// Client errors.
 #[derive(Debug)]
 pub enum Error {
-	/// Failed to open a yubikey. Make sure only 1 yubikey is connected to the
-	/// machine. Also try unplugging the yubikey to reset the PCSC session.
-	#[cfg(feature = "smartcard")]
-	OpenSingleYubiKey(yubikey::Error),
-	/// Error'ed while tried to generate a key and cert for the signing slot.
-	#[cfg(feature = "smartcard")]
-	GenerateSign(crate::yubikey::YubiKeyError),
-	/// Error'ed while tried to generate a key and cert for the encryption
-	/// slot.
-	#[cfg(feature = "smartcard")]
-	GenerateEncrypt(crate::yubikey::YubiKeyError),
-	/// General wrapper for yubikey error
-	#[cfg(feature = "smartcard")]
-	YubiKey(crate::yubikey::YubiKeyError),
-	/// Error from qos p256.
-	P256(qos_p256::P256Error),
-	/// The public key read from the yubikey for the pair did not match what
-	/// was expected.
-	#[cfg(feature = "smartcard")]
-	WrongPublicKey,
-	/// An error trying to read a pin from the terminal
-	#[allow(clippy::enum_variant_names)]
-	#[cfg(feature = "smartcard")]
-	PinEntryError(std::io::Error),
+	/// Error deriving a member key from a `YubiKey` OTP challenge-response.
+	Otp(crate::otp::OtpError),
+	/// Error from qos hybrid keys.
+	Hybrid(qos_hybrid::HybridError),
 	/// Failed to read share
 	ReadShare(String),
 	/// Error while try to read the quorum public key.
-	FailedToReadQuorumPublicKey(qos_p256::P256Error),
+	FailedToReadQuorumPublicKey(qos_hybrid::HybridError),
 	/// Error trying to the read a file that is supposed to have a manifest.
 	FailedToReadManifestFile(std::io::Error),
 	/// Error deserializing manifest.
@@ -105,6 +79,9 @@ pub enum Error {
 	FailedToReadManifestEnvelopeFile(std::io::Error),
 	/// Error deserializing manifest envelope.
 	FileDidNotHaveValidManifestEnvelope,
+	/// The ephemeral key is not the one whose attestation binding is in the
+	/// attestation document.
+	EphemeralKeyNotAttested,
 	/// Error trying to read a file that is supposed to contain attestation
 	/// doc.
 	FailedToReadAttestationDoc(std::io::Error),
@@ -129,7 +106,7 @@ pub enum Error {
 	CouldNotDecodeHex(qos_hex::HexError),
 	/// Failed to deserialize something from borsh or json
 	Deserialize(String),
-	FailedToReadDrKey(qos_p256::P256Error),
+	FailedToReadDrKey(qos_hybrid::HybridError),
 	QosAttest(String),
 	/// Pivot file
 	FailedToReadPivot(std::io::Error),
@@ -141,8 +118,6 @@ pub enum Error {
 	InvalidEncryptedQuorumKey,
 	/// Signature could not be verified.
 	InvalidSignature,
-	/// Could not deterministically reproduce a signature.
-	CouldNotReproduceSignature,
 	/// Decryption did not result in the expected palintext.
 	BadDecryption,
 	/// The seed was read two different ways and the results did not match -
@@ -195,16 +170,15 @@ impl From<ManifestBuilderError> for Error {
 	}
 }
 
-#[cfg(feature = "smartcard")]
-impl From<crate::yubikey::YubiKeyError> for Error {
-	fn from(err: crate::yubikey::YubiKeyError) -> Self {
-		Error::YubiKey(err)
+impl From<crate::otp::OtpError> for Error {
+	fn from(err: crate::otp::OtpError) -> Self {
+		Error::Otp(err)
 	}
 }
 
-impl From<P256Error> for Error {
-	fn from(err: P256Error) -> Self {
-		Error::P256(err)
+impl From<HybridError> for Error {
+	fn from(err: HybridError) -> Self {
+		Error::Hybrid(err)
 	}
 }
 
@@ -221,49 +195,48 @@ impl From<qos_nsm::nitro::AttestError> for Error {
 	}
 }
 
-/// Use a P256 key pair or Yubikey for signing operations.
+/// A member key: from a master seed file, or derived from a `YubiKey` OTP
+/// challenge-response slot (see [`crate::otp`]).
 pub enum PairOrYubi {
-	/// Yubikey
-	#[cfg(feature = "smartcard")]
-	Yubi((yubikey::YubiKey, Zeroizing<Vec<u8>>)),
-	/// P256 keypair
-	Pair(P256Pair),
+	/// Hybrid pair derived from a `YubiKey` OTP slot and a salt file.
+	Yubi(HybridPair),
+	/// Hybrid pair from a master seed file.
+	Pair(HybridPair),
 }
 
 impl PairOrYubi {
-	/// Create a P256 key pair or yubikey from the given inputs.
+	/// Create the member key from the given inputs.
 	///
 	/// # Errors
 	///
-	/// Returns [`Error`] if the `YubiKey` cannot be opened, the PIN cannot
-	/// be read, or the secret file is invalid.
-	#[allow(clippy::missing_panics_doc)]
+	/// Returns [`Error`] if the salt or secret file is invalid, or the
+	/// challenge-response command is refused or fails.
+	///
+	/// # Panics
+	///
+	/// Panics unless exactly one of `yubikey_flag` and `secret_path` is given,
+	/// or if `yubikey_flag` is given without `yubikey_salt_path`.
 	pub fn from_inputs(
 		yubikey_flag: bool,
 		secret_path: Option<String>,
-		maybe_pin_path: Option<String>,
+		yubikey_salt_path: Option<String>,
+		challenge_command: Option<String>,
 	) -> Result<Self, Error> {
 		let result = match (yubikey_flag, secret_path) {
 			(true, None) => {
-				#[cfg(feature = "smartcard")]
-				{
-					let yubi = crate::yubikey::open_single()?;
-
-					let pin = if let Some(pin_path) = maybe_pin_path {
-						pin_from_path(pin_path)
-					} else {
-						prompt_pin()?
-					};
-
-					PairOrYubi::Yubi((yubi, pin))
-				}
-				#[cfg(not(feature = "smartcard"))]
-				{
-					panic!("{TAP_MSG}");
-				}
+				let salt = crate::otp::read_salt(
+					yubikey_salt_path
+						.expect("`--yubikey` needs `--yubikey-salt-path`"),
+				)?;
+				let command = challenge_command.unwrap_or_else(|| {
+					crate::otp::DEFAULT_CHALLENGE_COMMAND.to_string()
+				});
+				PairOrYubi::Yubi(crate::otp::derive_member_pair(
+					&command, &salt,
+				)?)
 			}
 			(false, Some(path)) => {
-				let pair = P256Pair::from_hex_file(path)?;
+				let pair = HybridPair::from_hex_file(path)?;
 				PairOrYubi::Pair(pair)
 			}
 			(false, None) => panic!("Need either yubikey flag or secret path"),
@@ -275,20 +248,19 @@ impl PairOrYubi {
 		Ok(result)
 	}
 
+	fn pair(&self) -> &HybridPair {
+		match self {
+			Self::Yubi(pair) | Self::Pair(pair) => pair,
+		}
+	}
+
 	/// Sign the payload.
 	///
 	/// # Errors
 	///
 	/// Returns [`Error`] if signing fails.
 	pub fn sign(&mut self, data: &[u8]) -> Result<Vec<u8>, Error> {
-		match self {
-			#[cfg(feature = "smartcard")]
-			Self::Yubi((yubi, pin)) => {
-				println!("{TAP_MSG}");
-				crate::yubikey::sign_data(yubi, data, pin).map_err(Into::into)
-			}
-			Self::Pair(pair) => pair.sign(data).map_err(Into::into),
-		}
+		self.pair().sign(data).map_err(Into::into)
 	}
 
 	/// Decrypt the payload.
@@ -300,38 +272,17 @@ impl PairOrYubi {
 		&mut self,
 		payload: &[u8],
 	) -> Result<Zeroizing<Vec<u8>>, Error> {
-		match self {
-			#[cfg(feature = "smartcard")]
-			Self::Yubi((yubi, pin)) => {
-				println!("{TAP_MSG}");
-				let shared_secret =
-					crate::yubikey::shared_secret(yubi, payload, pin)?;
-				let encrypt_pub = crate::yubikey::key_agree_public_key(yubi)?;
-				let public = qos_p256::encrypt::P256EncryptPublic::from_bytes(
-					&encrypt_pub,
-				)?;
-
-				public
-					.decrypt_from_shared_secret(payload, &shared_secret)
-					.map_err(Into::into)
-			}
-			Self::Pair(pair) => pair.decrypt(payload).map_err(Into::into),
-		}
+		self.pair().decrypt(payload).map_err(Into::into)
 	}
 
 	/// Get the public key in bytes.
 	///
 	/// # Errors
 	///
-	/// Returns [`Error`] if the public key cannot be read.
+	/// Infallible: both variants hold the pair in memory. The `Result` keeps
+	/// the call sites uniform with [`Self::sign`] and [`Self::decrypt`].
 	pub fn public_key_bytes(&mut self) -> Result<Vec<u8>, Error> {
-		match self {
-			#[cfg(feature = "smartcard")]
-			Self::Yubi((yubi, _)) => {
-				crate::yubikey::pair_public_key(yubi).map_err(Into::into)
-			}
-			Self::Pair(pair) => Ok(pair.public_key().to_bytes()),
-		}
+		Ok(self.pair().public_key().to_bytes())
 	}
 }
 
@@ -342,7 +293,7 @@ pub fn generate_file_key<P: AsRef<Path>>(
 	pub_key_path: P,
 ) {
 	let share_key_pair =
-		P256Pair::generate().expect("unable to generate P256 keypair");
+		HybridPair::generate().expect("unable to generate hybrid keypair");
 
 	// Write the personal key secret
 	write_secret_with_msg(
@@ -359,124 +310,29 @@ pub fn generate_file_key<P: AsRef<Path>>(
 	);
 }
 
-#[cfg(feature = "smartcard")]
+/// Mint a `YubiKey` member key: write a fresh salt to `salt_path`, derive the
+/// hybrid pair from the device's OTP challenge-response, and write its public
+/// key to `pub_path`. The device must answer the challenge and answer it the
+/// same way twice, or nothing is written.
 pub(crate) fn provision_yubikey<P: AsRef<Path>>(
 	pub_path: P,
+	salt_path: P,
+	challenge_command: &str,
 ) -> Result<(), Error> {
-	let mut yubikey =
-		yubikey::YubiKey::open().map_err(Error::OpenSingleYubiKey)?;
+	let salt = crate::otp::fresh_salt();
+	let pair = crate::otp::derive_member_pair_probed(challenge_command, &salt)?;
 
-	let pin = prompt_pin()?;
-
-	let _sign_public_key_bytes = crate::yubikey::generate_signed_certificate(
-		&mut yubikey,
-		crate::yubikey::SIGNING_SLOT,
-		&pin,
-		yubikey::MgmKey::default(),
-		yubikey::TouchPolicy::Always,
-	)
-	.map_err(Error::GenerateSign)?;
-
-	let _encrypt_public_key_bytes =
-		crate::yubikey::generate_signed_certificate(
-			&mut yubikey,
-			crate::yubikey::KEY_AGREEMENT_SLOT,
-			&pin,
-			yubikey::MgmKey::default(),
-			yubikey::TouchPolicy::Always,
-		)
-		.map_err(Error::GenerateEncrypt)?;
-
-	let public_key_bytes = crate::yubikey::pair_public_key(&mut yubikey)?;
-	let public_key_hex = qos_hex::encode(&public_key_bytes);
-
-	// Explicitly drop the yubikey to disconnect the PCSC session.
-	drop(yubikey);
-
+	crate::otp::write_new_salt(salt_path.as_ref(), &salt)?;
 	write_with_msg(
 		pub_path.as_ref(),
-		public_key_hex.as_bytes(),
-		"YubiKey encrypt+sign public key",
+		&pair.public_key().to_hex_bytes(),
+		"YubiKey hybrid member public key",
 	);
-
-	Ok(())
-}
-
-pub(crate) fn pin_from_path<P: AsRef<Path>>(path: P) -> Zeroizing<Vec<u8>> {
-	let file = File::open(path).expect("Failed to open current pin path");
-	let line = BufReader::new(file)
-		.lines()
-		.next()
-		.expect("First line missing from current pin file")
-		.expect("Error reading first line");
-	Zeroizing::new(line.into_bytes())
-}
-
-#[cfg(feature = "smartcard")]
-fn prompt_pin() -> Result<Zeroizing<Vec<u8>>, Error> {
-	let pin = rpassword::prompt_password(ENTER_PIN_PROMPT)
-		.map_err(Error::PinEntryError)?;
-	Ok(Zeroizing::new(pin.into_bytes()))
-}
-
-/// Provision a yubikey from a pre-generated master seed.
-///
-/// # Errors
-///
-/// Returns [`Error`] if the `YubiKey` cannot be opened, the PIN cannot be
-/// read, or provisioning fails.
-#[cfg(feature = "smartcard")]
-pub fn advanced_provision_yubikey<P: AsRef<Path>>(
-	master_seed_path: P,
-	maybe_pin_path: Option<String>,
-) -> Result<(), Error> {
-	let mut yubikey =
-		yubikey::YubiKey::open().map_err(Error::OpenSingleYubiKey)?;
-
-	let pin = if let Some(pin_path) = maybe_pin_path {
-		pin_from_path(pin_path)
-	} else {
-		prompt_pin()?
-	};
-
-	let pair = P256Pair::from_hex_file(master_seed_path)?;
-
-	let master_seed = pair.to_master_seed();
-	let encrypt_secret = qos_p256::derive_secret(
-		master_seed,
-		qos_p256::P256_ENCRYPT_DERIVE_PATH,
-	)?;
-	let sign_secret =
-		qos_p256::derive_secret(master_seed, qos_p256::P256_SIGN_DERIVE_PATH)?;
-
-	crate::yubikey::import_key_and_generate_signed_certificate(
-		&mut yubikey,
-		&sign_secret[..],
-		crate::yubikey::SIGNING_SLOT,
-		&pin,
-		yubikey::MgmKey::default(),
-		yubikey::TouchPolicy::Always,
-	)
-	.map_err(Error::GenerateSign)?;
-
-	crate::yubikey::import_key_and_generate_signed_certificate(
-		&mut yubikey,
-		&encrypt_secret[..],
-		crate::yubikey::KEY_AGREEMENT_SLOT,
-		&pin,
-		yubikey::MgmKey::default(),
-		yubikey::TouchPolicy::Always,
-	)
-	.map_err(Error::GenerateEncrypt)?;
-
-	let public_key_bytes = crate::yubikey::pair_public_key(&mut yubikey)?;
-	let other = pair.public_key().to_bytes();
-
-	if public_key_bytes != other {
-		return Err(Error::WrongPublicKey);
-	}
-	// Explicitly drop the yubikey to disconnect the PCSC session.
-	drop(yubikey);
+	println!(
+		"Back up {} next to the public key: without it this YubiKey cannot \
+		 derive the member key again. Never reprogram OTP slot 2.",
+		salt_path.as_ref().display()
+	);
 
 	Ok(())
 }
@@ -505,7 +361,7 @@ pub(crate) fn boot_genesis<P: AsRef<Path>>(
 	let genesis_set = get_genesis_set(&share_set_dir);
 	let dr_key = if let Some(p) = dr_key_path {
 		let public =
-			P256Public::from_hex_file(p).map_err(Error::FailedToReadDrKey)?;
+			HybridPublic::from_hex_file(p).map_err(Error::FailedToReadDrKey)?;
 		Some(public.to_bytes())
 	} else {
 		None
@@ -529,7 +385,7 @@ pub(crate) fn boot_genesis<P: AsRef<Path>>(
 		return Err(Error::GenesisOutputDoesNotMatchRequest);
 	}
 	let quorum_key =
-		P256Public::from_bytes(&genesis_output.quorum_key).unwrap();
+		HybridPublic::from_bytes(&genesis_output.quorum_key).unwrap();
 	let attestation_doc =
 		extract_attestation_doc(&cose_sign1, unsafe_skip_attestation, None);
 
@@ -642,12 +498,13 @@ pub(crate) fn verify_genesis<P: AsRef<Path>>(
 			)
 		}),
 	);
-	let pair = P256Pair::from_hex_file(master_seed_path).unwrap_or_else(|e| {
-		panic!(
-			"verify_genesis: Could not parse master seed from {}: {e:?}",
-			master_seed_path.display()
-		)
-	});
+	let pair =
+		HybridPair::from_hex_file(master_seed_path).unwrap_or_else(|e| {
+			panic!(
+				"verify_genesis: Could not parse master seed from {}: {e:?}",
+				master_seed_path.display()
+			)
+		});
 
 	// sanity check our logic to read in master seed
 	if pair.to_master_seed_hex().as_slice() != master_seed_hex.as_bytes() {
@@ -668,13 +525,6 @@ pub(crate) fn verify_genesis<P: AsRef<Path>>(
 		return Err(Error::InvalidSignature);
 	}
 	println!("Quorum key signature over test message successfully verifies");
-	let expected_signature = pair.sign(&genesis_output.test_message)?;
-	if expected_signature != genesis_output.test_message_signature {
-		return Err(Error::CouldNotReproduceSignature);
-	}
-	println!(
-		"Quorum key signature over test message was deterministically reproduced"
-	);
 
 	// check test_message_ciphertext
 	let plaintext = pair.decrypt(&genesis_output.test_message_ciphertext)?;
@@ -846,7 +696,7 @@ pub(crate) fn generate_manifest<P: AsRef<Path>>(
 	};
 	let patch_set = get_patch_set(patch_set_dir);
 	// Get quorum key from namespaces dir
-	let quorum_key = P256Public::from_hex_file(&quorum_key_path)
+	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
 		.map_err(Error::FailedToReadQuorumPublicKey)?;
 
 	let manifest = ManifestBuilder::new()
@@ -905,7 +755,7 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 	let pivot_hash = extract_pivot_hash(pivot_hash_path);
 	let manifest_set = get_manifest_set(manifest_set_dir);
 	let share_set = get_share_set(share_set_dir);
-	let quorum_key = P256Public::from_hex_file(&quorum_key_path)
+	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
 		.map_err(Error::FailedToReadQuorumPublicKey)?;
 
 	let manifest = ManifestBuilder::new()
@@ -989,7 +839,7 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 	} = args;
 
 	let manifest = read_manifest_compat(&manifest_path)?;
-	let quorum_key = P256Public::from_hex_file(&quorum_key_path)
+	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
 		.map_err(Error::FailedToReadQuorumPublicKey)?;
 	let patch_set = match (&manifest, patch_set_dir) {
 		(VersionedManifest::V2(_), Some(_)) => {
@@ -1058,7 +908,7 @@ fn approve_manifest_programmatic_verifications(
 	patch_set: Option<&PatchSet>,
 	nitro_config: &NitroConfig,
 	pivot_hash: &[u8],
-	quorum_key: &P256Public,
+	quorum_key: &HybridPublic,
 ) -> bool {
 	// Verify manifest set composition
 	if manifest.manifest_set() != manifest_set {
@@ -1274,11 +1124,63 @@ pub(crate) fn generate_manifest_envelope<P: AsRef<Path>>(
 	Ok(())
 }
 
+/// Path of the full ephemeral public key saved beside an attestation document:
+/// the document only carries the key's attestation binding.
+pub(crate) fn ephemeral_public_key_path<P: AsRef<Path>>(
+	attestation_doc_path: P,
+) -> PathBuf {
+	let mut path = attestation_doc_path.as_ref().as_os_str().to_owned();
+	path.push(".ephemeral_public_key");
+	PathBuf::from(path)
+}
+
+fn write_ephemeral_public_key<P: AsRef<Path>>(
+	attestation_doc_path: P,
+	ephemeral_public_key: &[u8],
+) {
+	write_with_msg(
+		&ephemeral_public_key_path(attestation_doc_path),
+		qos_hex::encode(ephemeral_public_key).as_bytes(),
+		"Ephemeral Public Key",
+	);
+}
+
+fn read_ephemeral_public_key<P: AsRef<Path>>(
+	attestation_doc_path: P,
+) -> Result<Vec<u8>, Error> {
+	let path = ephemeral_public_key_path(attestation_doc_path);
+	let hex = fs::read_to_string(&path).map_err(|e| Error::FailedToRead {
+		path: path.display().to_string(),
+		error: e.to_string(),
+	})?;
+	qos_hex::decode(hex.trim()).map_err(Error::CouldNotDecodeHex)
+}
+
+/// Parse `ephemeral_public_key` and check that the attestation document's
+/// `public_key` field holds its attestation binding, so a share or quorum key
+/// is only ever encrypted to the key the enclave attested.
+fn attested_ephemeral_key(
+	attestation_doc: &AttestationDoc,
+	ephemeral_public_key: &[u8],
+) -> Result<HybridPublic, Error> {
+	let ephemeral_key = HybridPublic::from_bytes(ephemeral_public_key)?;
+	match attestation_doc.public_key.as_ref() {
+		Some(binding)
+			if binding.as_slice()
+				== ephemeral_key.attestation_binding().as_slice() =>
+		{
+			Ok(ephemeral_key)
+		}
+		_ => Err(Error::EphemeralKeyNotAttested),
+	}
+}
+
 pub(crate) fn boot_key_fwd<P: AsRef<Path>>(
 	uri: &str,
 	manifest_envelope_path: P,
 	pivot_path: P,
 	attestation_doc_path: P,
+	app_key_mode: AppKeyMode,
 ) -> Result<(), Error> {
 	let pivot =
 		fs::read(pivot_path.as_ref()).map_err(Error::FailedToReadPivot)?;
@@ -1289,13 +1191,15 @@ pub(crate) fn boot_key_fwd<P: AsRef<Path>>(
 	let req = ProtocolMsg::BootKeyForwardRequest {
 		manifest_envelope: Box::new(manifest_envelope),
 		pivot,
+		app_key_mode,
 	};
-	let cose_sign1 =
+	let (cose_sign1, ephemeral_public_key) =
 		post_request_with_encoding_fallback(uri, &req, encodings, |resp| {
 			match resp {
 				ProtocolMsg::BootKeyForwardResponse {
 					nsm_response: NsmResponse::Attestation { document },
-				} => Ok(document),
+					ephemeral_public_key,
+				} => Ok((document, ephemeral_public_key)),
 				r => Err(format!("{r:?}")),
 			}
 		})
@@ -1306,6 +1210,7 @@ pub(crate) fn boot_key_fwd<P: AsRef<Path>>(
 		&cose_sign1,
 		"COSE Sign1 Attestation Doc",
 	);
+	write_ephemeral_public_key(&attestation_doc_path, &ephemeral_public_key);
 
 	Ok(())
 }
@@ -1321,10 +1226,13 @@ pub(crate) fn export_key<P: AsRef<Path>>(
 	let encodings = manifest_envelope_protocol_encodings(&manifest_envelope);
 	let cose_sign1_attestation_doc = fs::read(attestation_doc_path.as_ref())
 		.map_err(Error::FailedToReadAttestationDoc)?;
+	let ephemeral_public_key =
+		read_ephemeral_public_key(&attestation_doc_path)?;
 
 	let req = ProtocolMsg::ExportKeyRequest {
 		manifest_envelope: Box::new(manifest_envelope),
 		cose_sign1_attestation_doc,
+		ephemeral_public_key,
 	};
 
 	let encrypted_quorum_key =
@@ -1333,7 +1241,14 @@ pub(crate) fn export_key<P: AsRef<Path>>(
 				ProtocolMsg::ExportKeyResponse {
 					encrypted_quorum_key,
 					signature,
-				} => Ok(EncryptedQuorumKey { encrypted_quorum_key, signature }),
+					encrypted_app_key,
+					app_key_attestation_doc,
+				} => Ok(EncryptedQuorumKey {
+					encrypted_quorum_key,
+					signature,
+					encrypted_app_key,
+					app_key_attestation_doc,
+				}),
 				r => Err(format!("{r:?}")),
 			}
 		})
@@ -1409,6 +1324,8 @@ pub(crate) fn inject_key<P: AsRef<Path>>(
 	let req = ProtocolMsg::InjectKeyRequest {
 		encrypted_quorum_key: encrypted_quorum_key.encrypted_quorum_key,
 		signature: encrypted_quorum_key.signature,
+		encrypted_app_key: encrypted_quorum_key.encrypted_app_key,
+		app_key_attestation_doc: encrypted_quorum_key.app_key_attestation_doc,
 	};
 
 	match request::post(uri, &req).unwrap() {
@@ -1433,16 +1350,17 @@ fn boot_standard_attestation_doc_with_fallback(
 	uri: &str,
 	manifest_envelope: VersionedManifestEnvelope,
 	pivot: Vec<u8>,
-) -> Result<Vec<u8>, Error> {
+) -> Result<(Vec<u8>, Vec<u8>), Error> {
 	let req = ProtocolMsg::BootStandardJsonEnvelopeRequest {
 		manifest_envelope: Box::new(JsonBytes::new(manifest_envelope)),
 		pivot,
 	};
 	if let Ok(ProtocolMsg::BootStandardResponse {
 		nsm_response: NsmResponse::Attestation { document },
+		ephemeral_public_key,
 	}) = request::post_borsh(uri, &req)
 	{
-		return Ok(document);
+		return Ok((document, ephemeral_public_key));
 	}
 
 	let ProtocolMsg::BootStandardJsonEnvelopeRequest {
@@ -1461,7 +1379,8 @@ fn boot_standard_attestation_doc_with_fallback(
 	match request::post_borsh(uri, &req) {
 		Ok(ProtocolMsg::BootStandardResponse {
 			nsm_response: NsmResponse::Attestation { document },
-		}) => Ok(document),
+			ephemeral_public_key,
+		}) => Ok((document, ephemeral_public_key)),
 		Ok(r) => Err(Error::UnexpectedProtocolMsgResponse(format!("{r:?}"))),
 		Err(err) => Err(Error::UnexpectedProtocolMsgResponse(err)),
 	}
@@ -1487,11 +1406,12 @@ pub(crate) fn boot_standard<P: AsRef<Path>>(
 
 	// Broadcast boot standard instruction and extract the attestation doc from
 	// the response.
-	let cose_sign1 = boot_standard_attestation_doc_with_fallback(
-		&uri,
-		manifest_envelope,
-		pivot,
-	)?;
+	let (cose_sign1, ephemeral_public_key) =
+		boot_standard_attestation_doc_with_fallback(
+			&uri,
+			manifest_envelope,
+			pivot,
+		)?;
 
 	let attestation_doc =
 		extract_attestation_doc(&cose_sign1, unsafe_skip_attestation, None);
@@ -1516,12 +1436,8 @@ pub(crate) fn boot_standard<P: AsRef<Path>>(
 			},
 		)?;
 
-		// Sanity check the ephemeral key is valid
-		let eph_pub_bytes = attestation_doc
-			.public_key
-			.expect("No ephemeral key in the attestation doc");
-		P256Public::from_bytes(&eph_pub_bytes)
-			.expect("Ephemeral key not valid public key");
+		// Check the returned ephemeral key is the one the enclave attested
+		attested_ephemeral_key(&attestation_doc, &ephemeral_public_key)?;
 	}
 
 	Ok(())
@@ -1532,28 +1448,28 @@ pub(crate) fn get_attestation_doc<P: AsRef<Path>>(
 	attestation_doc_path: P,
 	manifest_envelope_path: P,
 ) {
-	let (cose_sign1, manifest_envelope) = match request::post(
-		uri,
-		&ProtocolMsg::LiveAttestationDocRequest,
-	) {
-		Ok(ProtocolMsg::LiveAttestationDocResponse {
-			nsm_response: NsmResponse::Attestation { document },
-			manifest_envelope: Some(manifest_envelope),
-		}) => (document, manifest_envelope),
-		Ok(ProtocolMsg::LiveAttestationDocResponse {
-			nsm_response: _,
-			manifest_envelope: None,
-		}) => panic!(
-			"ManifestEnvelope does not exist in enclave - likely waiting for boot instruction"
-		),
-		r => panic!("Unexpected response: {r:?}"),
-	};
+	let (cose_sign1, manifest_envelope, ephemeral_public_key) =
+		match request::post(uri, &ProtocolMsg::LiveAttestationDocRequest) {
+			Ok(ProtocolMsg::LiveAttestationDocResponse {
+				nsm_response: NsmResponse::Attestation { document },
+				manifest_envelope: Some(manifest_envelope),
+				ephemeral_public_key,
+			}) => (document, manifest_envelope, ephemeral_public_key),
+			Ok(ProtocolMsg::LiveAttestationDocResponse {
+				manifest_envelope: None,
+				..
+			}) => panic!(
+				"ManifestEnvelope does not exist in enclave - likely waiting for boot instruction"
+			),
+			r => panic!("Unexpected response: {r:?}"),
+		};
 
 	write_with_msg(
 		attestation_doc_path.as_ref(),
 		&cose_sign1,
 		"COSE Sign1 Attestation Doc",
 	);
+	write_ephemeral_public_key(&attestation_doc_path, &ephemeral_public_key);
 	write_with_msg(
 		manifest_envelope_path.as_ref(),
 		&serde_json::to_vec(&manifest_envelope)
@@ -1630,17 +1546,17 @@ pub(crate) fn proxy_re_encrypt_share<P: AsRef<Path>>(
 	}
 
 	// Pull out the ephemeral key or use the override
-	let eph_pub: P256Public = if let Some(ref eph_path) =
+	let eph_pub: HybridPublic = if let Some(ref eph_path) =
 		unsafe_eph_path_override
 	{
-		P256Pair::from_hex_file(eph_path)
+		HybridPair::from_hex_file(eph_path)
 			.unwrap_or_else(|e| panic!("proxy_re_encrypt_share: Could not read ephemeral key from {eph_path:?}: {e:?}"))
 			.public_key()
 	} else {
-		P256Public::from_bytes(&attestation_doc.public_key.expect(
-			"proxy_re_encrypt_share: No ephemeral key in the attestation doc",
-		))
-		.expect("proxy_re_encrypt_share: Ephemeral key not valid public key")
+		attested_ephemeral_key(
+			&attestation_doc,
+			&read_ephemeral_public_key(&attestation_doc_path)?,
+		)?
 	};
 
 	let member = QuorumMember { pub_key: pair.public_key_bytes()?, alias };
@@ -1818,11 +1734,20 @@ pub(crate) fn post_share<P: AsRef<Path>>(
 	Ok(())
 }
 
-#[cfg(feature = "smartcard")]
-pub(crate) fn yubikey_sign(hex_payload: &str) -> Result<(), Error> {
+/// Sign a hex payload with the `YubiKey` member key and print the signature.
+pub(crate) fn yubikey_sign(
+	hex_payload: &str,
+	salt_path: String,
+	challenge_command: Option<String>,
+) -> Result<(), Error> {
 	let bytes = qos_hex::decode(hex_payload)?;
 
-	let mut pair = PairOrYubi::from_inputs(true, None, None)?;
+	let mut pair = PairOrYubi::from_inputs(
+		true,
+		None,
+		Some(salt_path),
+		challenge_command,
+	)?;
 	let signature_bytes = pair.sign(&bytes)?;
 	let signature = qos_hex::encode(&signature_bytes);
 
@@ -1831,10 +1756,18 @@ pub(crate) fn yubikey_sign(hex_payload: &str) -> Result<(), Error> {
 	Ok(())
 }
 
-#[cfg(feature = "smartcard")]
-pub(crate) fn yubikey_public() -> Result<(), Error> {
-	let mut yubi = crate::yubikey::open_single()?;
-	let public = crate::yubikey::pair_public_key(&mut yubi)?;
+/// Print the `YubiKey` member public key as hex.
+pub(crate) fn yubikey_public(
+	salt_path: String,
+	challenge_command: Option<String>,
+) -> Result<(), Error> {
+	let public = PairOrYubi::from_inputs(
+		true,
+		None,
+		Some(salt_path),
+		challenge_command,
+	)?
+	.public_key_bytes()?;
 
 	let hex = qos_hex::encode(&public);
 	println!("{hex}");
@@ -1842,13 +1775,13 @@ pub(crate) fn yubikey_public() -> Result<(), Error> {
 	Ok(())
 }
 
-pub(crate) fn p256_verify<P: AsRef<Path>>(
+pub(crate) fn hybrid_verify<P: AsRef<Path>>(
 	payload_path: P,
 	signature_path: P,
 	pub_path: P,
 ) -> Result<(), Error> {
 	let payload = fs::read(payload_path)?;
-	let public = P256Public::from_hex_file(pub_path)?;
+	let public = HybridPublic::from_hex_file(pub_path)?;
 	let signature_bytes = {
 		let signature_hex = fs::read_to_string(signature_path)?;
 
@@ -1865,13 +1798,13 @@ pub(crate) fn p256_verify<P: AsRef<Path>>(
 	}
 }
 
-pub(crate) fn p256_sign<P: AsRef<Path>>(
+pub(crate) fn hybrid_sign<P: AsRef<Path>>(
 	payload_path: &str,
 	signature_path: P,
 	master_seed_path: P,
 ) -> Result<(), Error> {
 	let payload = fs::read(payload_path)?;
-	let pair = P256Pair::from_hex_file(master_seed_path)?;
+	let pair = HybridPair::from_hex_file(master_seed_path)?;
 
 	let signature = {
 		let signature = pair.sign(&payload)?;
@@ -1880,18 +1813,18 @@ pub(crate) fn p256_sign<P: AsRef<Path>>(
 	write_with_msg(
 		signature_path.as_ref(),
 		signature.as_bytes(),
-		"p256 signature",
+		"ML-DSA-87 signature",
 	);
 
 	Ok(())
 }
 
-pub(crate) fn p256_asymmetric_encrypt<P: AsRef<Path>>(
+pub(crate) fn hybrid_asymmetric_encrypt<P: AsRef<Path>>(
 	plaintext_path: P,
 	ciphertext_path: P,
 	pub_path: P,
 ) -> Result<(), Error> {
-	let public = P256Public::from_hex_file(pub_path)?;
+	let public = HybridPublic::from_hex_file(pub_path)?;
 	let plaintext = std::fs::read(plaintext_path.as_ref())?;
 
 	let ciphertext = public.encrypt(&plaintext)?;
@@ -1901,13 +1834,13 @@ pub(crate) fn p256_asymmetric_encrypt<P: AsRef<Path>>(
 	Ok(())
 }
 
-pub(crate) fn p256_asymmetric_decrypt<P: AsRef<Path>>(
+pub(crate) fn hybrid_asymmetric_decrypt<P: AsRef<Path>>(
 	plaintext_path: P,
 	ciphertext_path: P,
 	master_seed_path: P,
 	output_hex: bool,
 ) -> Result<(), Error> {
-	let pair = P256Pair::from_hex_file(master_seed_path)?;
+	let pair = HybridPair::from_hex_file(master_seed_path)?;
 	let ciphertext = std::fs::read(ciphertext_path.as_ref())?;
 
 	let plaintext = pair.decrypt(&ciphertext)?;
@@ -1926,16 +1859,15 @@ pub(crate) fn get_ephemeral_key_hex<P: AsRef<Path>>(
 	attestation_doc_path: P,
 	ephemeral_key_path: P,
 ) {
-	let bytes = fs::read(attestation_doc_path)
+	let bytes = fs::read(&attestation_doc_path)
 		.unwrap_or_else(|e| panic!("Failed reading attestation doc: {e:?}"));
 	let attestation_doc: AttestationDoc =
 		extract_attestation_doc(bytes.as_ref(), true, None);
-	let ephemeral_key = P256Public::from_bytes(
-		&attestation_doc
-			.public_key
-			.expect("No ephemeral key in the attestation doc"),
-	)
-	.expect("Ephemeral key not valid public key");
+	let ephemeral_public_key = read_ephemeral_public_key(&attestation_doc_path)
+		.unwrap_or_else(|e| panic!("Failed reading ephemeral key: {e:?}"));
+	let ephemeral_key =
+		attested_ephemeral_key(&attestation_doc, &ephemeral_public_key)
+			.expect("Ephemeral key is not the one the attestation doc binds");
 	ephemeral_key.to_hex_file(ephemeral_key_path).unwrap_or_else(|e| {
 		panic!("Failed to encode ephemeral key to hex: {e:?}")
 	});
@@ -2021,7 +1953,7 @@ pub(crate) fn dangerous_dev_boot<P: AsRef<Path>>(
 	unsafe_eph_path_override: Option<&str>,
 ) {
 	// Generate a quorum key
-	let quorum_pair = P256Pair::generate().expect("Failed P256 key gen");
+	let quorum_pair = HybridPair::generate().expect("Failed hybrid key gen");
 	let quorum_public_der = quorum_pair.public_key().to_bytes();
 	let member = QuorumMember {
 		alias: DANGEROUS_DEV_BOOT_MEMBER.to_string(),
@@ -2098,17 +2030,19 @@ pub(crate) fn dangerous_dev_boot<P: AsRef<Path>>(
 		}))
 	};
 
-	let document = boot_standard_attestation_doc_with_fallback(
-		uri,
-		manifest_envelope.as_ref().clone(),
-		pivot,
-	)
-	.unwrap();
+	let (document, ephemeral_public_key) =
+		boot_standard_attestation_doc_with_fallback(
+			uri,
+			manifest_envelope.as_ref().clone(),
+			pivot,
+		)
+		.unwrap();
 	let attestation_doc = extract_attestation_doc(&document, true, None);
 
 	// Pull out the ephemeral key or use the override
-	let eph_pub: P256Public = if let Some(eph_path) = unsafe_eph_path_override {
-		P256Pair::from_hex_file(eph_path)
+	let eph_pub: HybridPublic = if let Some(eph_path) = unsafe_eph_path_override
+	{
+		HybridPair::from_hex_file(eph_path)
 			.unwrap_or_else(|e| {
 				panic!(
 					"dangerous_dev_boot: Could not read ephemeral key from {eph_path:?}: {e:?}"
@@ -2116,10 +2050,9 @@ pub(crate) fn dangerous_dev_boot<P: AsRef<Path>>(
 			})
 			.public_key()
 	} else {
-		P256Public::from_bytes(&attestation_doc.public_key.expect(
-			"dangerous_dev_boot: No ephemeral key in the attestation doc",
-		))
-		.expect("dangerous_dev_boot: Ephemeral key not valid public key")
+		attested_ephemeral_key(&attestation_doc, &ephemeral_public_key).expect(
+			"dangerous_dev_boot: Ephemeral key is not the one the attestation doc binds",
+		)
 	};
 
 	// Create ShareSet approval
@@ -2284,12 +2217,13 @@ fn get_share_set<P: AsRef<Path>>(dir: P) -> ShareSet {
 				return None;
 			}
 
-			let public = P256Public::from_hex_file(path).unwrap_or_else(|e| {
-				panic!(
-					"get_share_set: Could not read public key from {}: {e:?}",
-					path.display()
-				)
-			});
+			let public =
+				HybridPublic::from_hex_file(path).unwrap_or_else(|e| {
+					panic!(
+						"get_share_set: Could not read public key from {}: {e:?}",
+						path.display()
+					)
+				});
 			Some(QuorumMember {
 				alias: mem::take(&mut file_name[0]),
 				pub_key: public.to_bytes(),
@@ -2312,12 +2246,13 @@ fn get_manifest_set<P: AsRef<Path>>(dir: P) -> ManifestSet {
 				return None;
 			}
 
-			let public = P256Public::from_hex_file(path).unwrap_or_else(|e| {
-				panic!(
-					"get_manifest_set: Could not read public key from {}: {e:?}",
-					path.display()
-				)
-			});
+			let public =
+				HybridPublic::from_hex_file(path).unwrap_or_else(|e| {
+					panic!(
+						"get_manifest_set: Could not read public key from {}: {e:?}",
+						path.display()
+					)
+				});
 			Some(QuorumMember {
 				alias: mem::take(&mut file_name[0]),
 				pub_key: public.to_bytes(),
@@ -2340,12 +2275,13 @@ fn get_patch_set<P: AsRef<Path>>(dir: P) -> PatchSet {
 				return None;
 			}
 
-			let public = P256Public::from_hex_file(path).unwrap_or_else(|e| {
-				panic!(
-					"get_patch_set: Could not read public key from {}: {e:?}",
-					path.display()
-				)
-			});
+			let public =
+				HybridPublic::from_hex_file(path).unwrap_or_else(|e| {
+					panic!(
+						"get_patch_set: Could not read public key from {}: {e:?}",
+						path.display()
+					)
+				});
 			Some(MemberPubKey { pub_key: public.to_bytes() })
 		})
 		.collect();
@@ -2365,7 +2301,7 @@ fn get_genesis_set<P: AsRef<Path>>(dir: P) -> GenesisSet {
 				return None;
 			}
 
-			let public = P256Public::from_hex_file(path)
+			let public = HybridPublic::from_hex_file(path)
 				.map_err(|e| {
 					panic!(
 						"Could not read hex from share_key.pub: {}: {e:?}",
@@ -2421,7 +2357,7 @@ fn find_approvals<P: AsRef<Path>>(
 				approval.member.alias
 			);
 
-			let pub_key = P256Public::from_bytes(&approval.member.pub_key)
+			let pub_key = HybridPublic::from_bytes(&approval.member.pub_key)
 				.expect("Failed to interpret pub key");
 			assert!(
 				pub_key.verify(&manifest_hash, &approval.signature).is_ok(),
@@ -2727,8 +2663,8 @@ mod tests {
 			VersionedManifest, VersionedManifestEnvelope,
 		},
 	};
+	use qos_hybrid::{HybridPair, HybridPublic};
 	use qos_nsm::nitro::{AWS_ROOT_CERT_PEM, cert_from_pem};
-	use qos_p256::{P256Pair, P256Public};
 	use qos_test_primitives::PathWrapper;
 
 	use super::{
@@ -2744,13 +2680,13 @@ mod tests {
 		share_set: ShareSet,
 		nitro_config: NitroConfig,
 		pivot_hash: Vec<u8>,
-		quorum_key: P256Public,
+		quorum_key: HybridPublic,
 		manifest_envelope: VersionedManifestEnvelope,
 		patch_set: PatchSet,
 	}
 	fn setup() -> Setup {
 		let pairs: Vec<_> =
-			(0..3).map(|_| P256Pair::generate().unwrap()).collect();
+			(0..3).map(|_| HybridPair::generate().unwrap()).collect();
 
 		let members: Vec<_> = pairs
 			.iter()
@@ -2779,7 +2715,8 @@ mod tests {
 			aws_root_certificate: cert_from_pem(AWS_ROOT_CERT_PEM).unwrap(),
 		};
 		let pivot_hash = vec![5; 32];
-		let quorum_key: P256Public = P256Pair::generate().unwrap().public_key();
+		let quorum_key: HybridPublic =
+			HybridPair::generate().unwrap().public_key();
 
 		let manifest_v1 = Manifest {
 			namespace: Namespace {
@@ -3213,8 +3150,8 @@ mod tests {
 				..
 			} = setup();
 
-			let quorum_key: P256Public =
-				P256Pair::generate().unwrap().public_key();
+			let quorum_key: HybridPublic =
+				HybridPair::generate().unwrap().public_key();
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
@@ -3538,7 +3475,10 @@ mod tests {
 
 			manifest_set.members.push(QuorumMember {
 				alias: "got what plants need".to_string(),
-				pub_key: P256Pair::generate().unwrap().public_key().to_bytes(),
+				pub_key: HybridPair::generate()
+					.unwrap()
+					.public_key()
+					.to_bytes(),
 			});
 
 			let member = share_set.members[0].clone();

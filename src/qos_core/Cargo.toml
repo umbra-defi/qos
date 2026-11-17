@@ -1,11 +1,11 @@
 [package]
-name = "qos_core"
+name = "umbra_qos_core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Core components and logic for QuorumOS applications"
-repository = "https://github.com/tkhq/qos"
+repository = "https://github.com/umbra-defi/qos"
 readme = "README.md"
 keywords = ["quorumos", "enclave", "nitro", "tee", "quorum"]
 categories = ["os"]
@@ -17,7 +17,7 @@ workspace = true
 qos_crypto = { workspace = true }
 qos_hex = { workspace = true, features = ["serde"] }
 qos_json = { workspace = true }
-qos_p256 = { workspace = true }
+qos_hybrid = { workspace = true }
 qos_nsm = { workspace = true, default-features = false }
 
 etherparse = { workspace = true, optional = true }
@@ -31,6 +31,7 @@ aws-nitro-enclaves-nsm-api = { workspace = true }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true, features = ["alloc"] }
 
@@ -39,8 +40,8 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-th
 tokio-vsock = { workspace = true }
 
 [dev-dependencies]
-qos_test_primitives = { path = "../qos_test_primitives" }
-qos_p256 = { workspace = true, features = ["mock"] }
+qos_test_primitives = { path = "../qos_test_primitives", package = "umbra_qos_test_primitives" }
+qos_hybrid = { workspace = true, features = ["mock"] }
 qos_nsm = { workspace = true, features = ["mock"], default-features = false }
 rustls = { workspace = true }
 webpki-roots = { workspace = true }
@@ -52,3 +53,11 @@ egress = ["etherparse"]
 qemu = []
 # Never use in production - support for mock NSM
 mock = ["qos_nsm/mock"]
+
+[lib]
+name = "qos_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos_core"
+path = "src/main.rs"

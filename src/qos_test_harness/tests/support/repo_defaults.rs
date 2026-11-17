@@ -10,8 +10,8 @@ use qos_core::protocol::services::boot::{
 	QuorumMember, RestartPolicy, ShareSet,
 };
 use qos_crypto::{sha_256, sha_384};
+use qos_hybrid::HybridPublic;
 use qos_nsm::nitro::{AWS_ROOT_CERT_PEM, cert_from_pem};
-use qos_p256::P256Public;
 
 use qos_test_harness::{
 	ApprovingUserMaterial, BootClientFixture, BootMaterial, BuildError,
@@ -53,7 +53,7 @@ pub(super) fn test_manifest_template(
 ) -> Result<ManifestBuilder, BuildError> {
 	let fixture_dir = root.join("src/integration/mock");
 	let namespace_name = "quit-coding-to-vape";
-	let quorum_key = P256Public::from_hex_file(
+	let quorum_key = HybridPublic::from_hex_file(
 		fixture_dir
 			.join("namespaces")
 			.join(namespace_name)
@@ -119,7 +119,7 @@ fn read_members(root: &Path) -> Result<Vec<QuorumMember>, BuildError> {
 				))
 			})?
 			.to_string();
-		let public = P256Public::from_hex_file(&path).map_err(|err| {
+		let public = HybridPublic::from_hex_file(&path).map_err(|err| {
 			BuildError::Manifest(format!(
 				"read member {}: {err:?}",
 				path.display()

@@ -12,207 +12,143 @@ const QOS_CLIENT: &str = env!("CARGO_BIN_EXE_qos_client");
 const PIVOT_BYTES: &[u8] = b"mono compat pivot bytes";
 const PIVOT_SHA256_HEX: &str =
 	"6851e7d5d3200c971307b7f3d02c35dc685413215392f1b35fa5ecb53264d963";
-const MANIFEST_BORSH_LEN: usize = 1436;
+const MANIFEST_BORSH_LEN: usize = 17684;
 const MANIFEST_BORSH_SHA256_HEX: &str =
-	"f06b3417893b3c2648b36d25134c3d854405db7a609cc1d41b86c4f63fd476fd";
-const MANIFEST_ENVELOPE_BORSH_LEN: usize = 1653;
-const MANIFEST_ENVELOPE_BORSH_SHA256_HEX: &str =
-	"45052f0eba6f9a13f178b7eb25eafff323db7cb859e7cf024ca44136e706f4ab";
-const MANIFEST_V0_BORSH_LEN: usize = 1422;
+	"362a9a2cb804f655009afbb37c1b63f89395a5348c2d9c0ca737106197797ed7";
+const MANIFEST_ENVELOPE_BORSH_LEN: usize = 26526;
+const MANIFEST_V0_BORSH_LEN: usize = 17670;
 const MANIFEST_V0_BORSH_SHA256_HEX: &str =
-	"af2d3ce6fa8a7040fd560529c54ce031c66724b628925f2f37fe2c75a8729f91";
+	"32067c7e6525f26bfa53543f373a69247810880c5a35ef4d9e2d072257fb7258";
 
-const EXPECTED_MANIFEST_JSON: &str = concat!(
-	"{\"namespace\":{\"name\":\"production/signer\",\"nonce\":31,\"quo",
-	"rumKey\":\"040f461f922c36cfdf16a65f3f370f106e33157d24608e1",
-	"541291bc20e7d8182fa5030e074bb663a8d10ed424bcd26a369bd275",
-	"3cbbf19162a5492b5d592d2b33e042d79aeeb3d76adde343d7dba361",
-	"4bc63d8c7e247478bc7cfaec41e572ef20b1e637303393e16baf7891",
-	"d8c6cdaba124ff098d1d9d8df9bfaff8fd1423e57d025\"},\"pivot\":",
-	"{\"hash\":\"6851e7d5d3200c971307b7f3d02c35dc685413215392f1b",
-	"35fa5ecb53264d963\",\"restart\":\"Always\",\"bridgeConfig\":[{\"",
-	"type\":\"server\",\"port\":3000,\"host\":\"0.0.0.0\"}],\"debugMode",
-	"\":true,\"args\":[\"--config\",\"/etc/config.json\"]},\"manifest",
-	"Set\":{\"threshold\":1,\"members\":[{\"alias\":\"dev\",\"pubKey\":\"",
-	"040f461f922c36cfdf16a65f3f370f106e33157d24608e1541291bc2",
-	"0e7d8182fa5030e074bb663a8d10ed424bcd26a369bd2753cbbf1916",
-	"2a5492b5d592d2b33e042d79aeeb3d76adde343d7dba3614bc63d8c7",
-	"e247478bc7cfaec41e572ef20b1e637303393e16baf7891d8c6cdaba",
-	"124ff098d1d9d8df9bfaff8fd1423e57d025\"}]},\"shareSet\":{\"th",
-	"reshold\":1,\"members\":[{\"alias\":\"dev\",\"pubKey\":\"040f461f9",
-	"22c36cfdf16a65f3f370f106e33157d24608e1541291bc20e7d8182f",
-	"a5030e074bb663a8d10ed424bcd26a369bd2753cbbf19162a5492b5d",
-	"592d2b33e042d79aeeb3d76adde343d7dba3614bc63d8c7e247478bc",
-	"7cfaec41e572ef20b1e637303393e16baf7891d8c6cdaba124ff098d",
-	"1d9d8df9bfaff8fd1423e57d025\"}]},\"enclave\":{\"pcr0\":\"181bd",
+const EXPECTED_MANIFEST_JSON_TEMPLATE: &str = concat!(
+	"{\"namespace\":{\"name\":\"production/signer\",\"nonce\"",
+	":31,\"quorumKey\":\"{KEY}\"},\"pivot\":{\"hash\":\"6851e",
+	"7d5d3200c971307b7f3d02c35dc685413215392f1b35fa5ecb53264d",
+	"963\",\"restart\":\"Always\",\"bridgeConfig\":[{\"type\"",
+	":\"server\",\"port\":3000,\"host\":\"0.0.0.0\"}],\"debug",
+	"Mode\":true,\"args\":[\"--config\",\"/etc/config.json\"]",
+	"},\"manifestSet\":{\"threshold\":1,\"members\":[{\"alias",
+	"\":\"dev\",\"pubKey\":\"{KEY}\"}]},\"shareSet\":{\"thres",
+	"hold\":1,\"members\":[{\"alias\":\"dev\",\"pubKey\":\"{K",
+	"EY}\"}]},\"enclave\":{\"pcr0\":\"181bd012baaecfd0bd4d6f6",
+	"17bea65ad5a76413d2a0c09b18efe72bff3fdc4b55f7416ec6d88a4d",
+	"3236ce02d83b5eb8b\",\"pcr1\":\"181bd012baaecfd0bd4d6f617",
+	"bea65ad5a76413d2a0c09b18efe72bff3fdc4b55f7416ec6d88a4d32",
+	"36ce02d83b5eb8b\",\"pcr2\":\"21b9efbc184807662e966d34f39",
+	"0821309eeac6802309798826296bf3e8bec7c10edb30948c90ba6731",
+	"0f7b964fc500a\",\"pcr3\":\"78fce75db17cd4e0a3fb8dad3ad12",
+	"8ca5e77edbb2b2c7f75329dccd99aa5f6ef4fc1f1a452e315b9e98f9",
+	"e312e6921e6\",\"awsRootCertificate\":\"3082021130820196a",
+	"003020102021100f93175681b90afe11d46ccb4e4e7f856300a06082",
+	"a8648ce3d0403033049310b3009060355040613025553310f300d060",
+	"355040a0c06416d617a6f6e310c300a060355040b0c03415753311b3",
+	"01906035504030c126177732e6e6974726f2d656e636c61766573301",
+	"e170d3139313032383133323830355a170d343931303238313432383",
+	"0355a3049310b3009060355040613025553310f300d060355040a0c0",
+	"6416d617a6f6e310c300a060355040b0c03415753311b30190603550",
+	"4030c126177732e6e6974726f2d656e636c617665733076301006072",
+	"a8648ce3d020106052b8104002203620004fc0254eba608c1f36870e",
+	"29ada90be46383292736e894bfff672d989444b5051e534a4b1f6dbe",
+	"3c0bc581a32b7b176070ede12d69a3fea211b66e752cf7dd1dd095f6",
+	"f1370f4170843d9dc100121e4cf63012809664487c9796284304dc53",
+	"ff4a3423040300f0603551d130101ff040530030101ff301d0603551",
+	"d0e041604149025b50dd90547e796c396fa729dcf99a9df4b96300e0",
+	"603551d0f0101ff040403020186300a06082a8648ce3d04030303690",
+	"03066023100a37f2f91a1c9bd5ee7b8627c1698d255038e1f0343f95",
+	"b63a9628c3d39809545a11ebcbf2e3b55d8aeee71b4c3d6adf302310",
+	"0a2f39b1605b27028a5dd4ba069b5016e65b4fbde8fe0061d6a53197",
+	"f9cdaf5d943bc61fc2beb03cb6fee8d2302f3dff6\",\"qosCommit",
+	"\":\"\"},\"patchSet\":{\"threshold\":1,\"members\":[{\"p",
+	"ubKey\":\"{KEY}\"}]}}",
+);
+
+const EXPECTED_APPROVAL_JSON_TEMPLATE: &str = concat!(
+	"{\"signature\":\"{SIG}\",\"member\":{\"alias\":\"dev\",",
+	"\"pubKey\":\"{KEY}\"}}",
+);
+
+const EXPECTED_MANIFEST_ENVELOPE_JSON_TEMPLATE: &str = concat!(
+	"{\"manifest\":{\"namespace\":{\"name\":\"production/sign",
+	"er\",\"nonce\":31,\"quorumKey\":\"{KEY}\"},\"pivot\":{\"",
+	"hash\":\"6851e7d5d3200c971307b7f3d02c35dc685413215392f1b",
+	"35fa5ecb53264d963\",\"restart\":\"Always\",\"bridgeConfi",
+	"g\":[{\"type\":\"server\",\"port\":3000,\"host\":\"0.0.0",
+	".0\"}],\"debugMode\":true,\"args\":[\"--config\",\"/etc/",
+	"config.json\"]},\"manifestSet\":{\"threshold\":1,\"membe",
+	"rs\":[{\"alias\":\"dev\",\"pubKey\":\"{KEY}\"}]},\"share",
+	"Set\":{\"threshold\":1,\"members\":[{\"alias\":\"dev\",",
+	"\"pubKey\":\"{KEY}\"}]},\"enclave\":{\"pcr0\":\"181bd012",
+	"baaecfd0bd4d6f617bea65ad5a76413d2a0c09b18efe72bff3fdc4b5",
+	"5f7416ec6d88a4d3236ce02d83b5eb8b\",\"pcr1\":\"181bd012ba",
+	"aecfd0bd4d6f617bea65ad5a76413d2a0c09b18efe72bff3fdc4b55f",
+	"7416ec6d88a4d3236ce02d83b5eb8b\",\"pcr2\":\"21b9efbc1848",
+	"07662e966d34f390821309eeac6802309798826296bf3e8bec7c10ed",
+	"b30948c90ba67310f7b964fc500a\",\"pcr3\":\"78fce75db17cd4",
+	"e0a3fb8dad3ad128ca5e77edbb2b2c7f75329dccd99aa5f6ef4fc1f1",
+	"a452e315b9e98f9e312e6921e6\",\"awsRootCertificate\":\"30",
+	"82021130820196a003020102021100f93175681b90afe11d46ccb4e4",
+	"e7f856300a06082a8648ce3d0403033049310b300906035504061302",
+	"5553310f300d060355040a0c06416d617a6f6e310c300a060355040b",
+	"0c03415753311b301906035504030c126177732e6e6974726f2d656e",
+	"636c61766573301e170d3139313032383133323830355a170d343931",
+	"3032383134323830355a3049310b3009060355040613025553310f30",
+	"0d060355040a0c06416d617a6f6e310c300a060355040b0c03415753",
+	"311b301906035504030c126177732e6e6974726f2d656e636c617665",
+	"733076301006072a8648ce3d020106052b8104002203620004fc0254",
+	"eba608c1f36870e29ada90be46383292736e894bfff672d989444b50",
+	"51e534a4b1f6dbe3c0bc581a32b7b176070ede12d69a3fea211b66e7",
+	"52cf7dd1dd095f6f1370f4170843d9dc100121e4cf63012809664487",
+	"c9796284304dc53ff4a3423040300f0603551d130101ff0405300301",
+	"01ff301d0603551d0e041604149025b50dd90547e796c396fa729dcf",
+	"99a9df4b96300e0603551d0f0101ff040403020186300a06082a8648",
+	"ce3d0403030369003066023100a37f2f91a1c9bd5ee7b8627c1698d2",
+	"55038e1f0343f95b63a9628c3d39809545a11ebcbf2e3b55d8aeee71",
+	"b4c3d6adf3023100a2f39b1605b27028a5dd4ba069b5016e65b4fbde",
+	"8fe0061d6a53197f9cdaf5d943bc61fc2beb03cb6fee8d2302f3dff6",
+	"\",\"qosCommit\":\"\"},\"patchSet\":{\"threshold\":1,\"m",
+	"embers\":[{\"pubKey\":\"{KEY}\"}]}},\"manifestSetApprova",
+	"ls\":[{\"signature\":\"{SIG}\",\"member\":{\"alias\":\"d",
+	"ev\",\"pubKey\":\"{KEY}\"}}],\"shareSetApprovals\":[]}",
+);
+
+const EXPECTED_MANIFEST_V0_JSON_TEMPLATE: &str = concat!(
+	"{\"namespace\":{\"name\":\"production/signer\",\"nonce\"",
+	":31,\"quorumKey\":\"{KEY}\"},\"pivot\":{\"hash\":\"6851e",
+	"7d5d3200c971307b7f3d02c35dc685413215392f1b35fa5ecb53264d",
+	"963\",\"restart\":\"Always\",\"args\":[\"--config\",\"/e",
+	"tc/config.json\"]},\"manifestSet\":{\"threshold\":1,\"me",
+	"mbers\":[{\"alias\":\"dev\",\"pubKey\":\"{KEY}\"}]},\"sh",
+	"areSet\":{\"threshold\":1,\"members\":[{\"alias\":\"dev",
+	"\",\"pubKey\":\"{KEY}\"}]},\"enclave\":{\"pcr0\":\"181bd",
 	"012baaecfd0bd4d6f617bea65ad5a76413d2a0c09b18efe72bff3fdc",
-	"4b55f7416ec6d88a4d3236ce02d83b5eb8b\",\"pcr1\":\"181bd012baa",
-	"ecfd0bd4d6f617bea65ad5a76413d2a0c09b18efe72bff3fdc4b55f7",
-	"416ec6d88a4d3236ce02d83b5eb8b\",\"pcr2\":\"21b9efbc184807662",
-	"e966d34f390821309eeac6802309798826296bf3e8bec7c10edb3094",
-	"8c90ba67310f7b964fc500a\",\"pcr3\":\"78fce75db17cd4e0a3fb8da",
-	"d3ad128ca5e77edbb2b2c7f75329dccd99aa5f6ef4fc1f1a452e315b",
-	"9e98f9e312e6921e6\",\"awsRootCertificate\":\"308202113082019",
-	"6a003020102021100f93175681b90afe11d46ccb4e4e7f856300a060",
-	"82a8648ce3d0403033049310b3009060355040613025553310f300d0",
-	"60355040a0c06416d617a6f6e310c300a060355040b0c03415753311",
-	"b301906035504030c126177732e6e6974726f2d656e636c617665733",
-	"01e170d3139313032383133323830355a170d3439313032383134323",
-	"830355a3049310b3009060355040613025553310f300d060355040a0",
-	"c06416d617a6f6e310c300a060355040b0c03415753311b301906035",
-	"504030c126177732e6e6974726f2d656e636c6176657330763010060",
-	"72a8648ce3d020106052b8104002203620004fc0254eba608c1f3687",
-	"0e29ada90be46383292736e894bfff672d989444b5051e534a4b1f6d",
-	"be3c0bc581a32b7b176070ede12d69a3fea211b66e752cf7dd1dd095",
-	"f6f1370f4170843d9dc100121e4cf63012809664487c9796284304dc",
-	"53ff4a3423040300f0603551d130101ff040530030101ff301d06035",
-	"51d0e041604149025b50dd90547e796c396fa729dcf99a9df4b96300",
-	"e0603551d0f0101ff040403020186300a06082a8648ce3d040303036",
-	"9003066023100a37f2f91a1c9bd5ee7b8627c1698d255038e1f0343f",
-	"95b63a9628c3d39809545a11ebcbf2e3b55d8aeee71b4c3d6adf3023",
-	"100a2f39b1605b27028a5dd4ba069b5016e65b4fbde8fe0061d6a531",
-	"97f9cdaf5d943bc61fc2beb03cb6fee8d2302f3dff6\",\"qosCommit\"",
-	":\"\"},\"patchSet\":{\"threshold\":1,\"members\":[{\"pubKey\":\"040",
-	"f461f922c36cfdf16a65f3f370f106e33157d24608e1541291bc20e7",
-	"d8182fa5030e074bb663a8d10ed424bcd26a369bd2753cbbf19162a5",
-	"492b5d592d2b33e042d79aeeb3d76adde343d7dba3614bc63d8c7e24",
-	"7478bc7cfaec41e572ef20b1e637303393e16baf7891d8c6cdaba124",
-	"ff098d1d9d8df9bfaff8fd1423e57d025\"}]}}",
-);
-
-const EXPECTED_APPROVAL_JSON: &str = concat!(
-	"{\"signature\":\"ecbfbd26aa2be141d991a574bd78aea7fc940f7bf6",
-	"096db3aa2de0c07d9d9f0c9eef0a061fd64ca5e10bf8f2dce831c26f",
-	"a6eb42838d7aca89bbabca35e47374\",\"member\":{\"alias\":\"dev\",",
-	"\"pubKey\":\"040f461f922c36cfdf16a65f3f370f106e33157d24608e",
-	"1541291bc20e7d8182fa5030e074bb663a8d10ed424bcd26a369bd27",
-	"53cbbf19162a5492b5d592d2b33e042d79aeeb3d76adde343d7dba36",
-	"14bc63d8c7e247478bc7cfaec41e572ef20b1e637303393e16baf789",
-	"1d8c6cdaba124ff098d1d9d8df9bfaff8fd1423e57d025\"}}",
-);
-
-const EXPECTED_MANIFEST_ENVELOPE_JSON: &str = concat!(
-	"{\"manifest\":{\"namespace\":{\"name\":\"production/signer\",\"no",
-	"nce\":31,\"quorumKey\":\"040f461f922c36cfdf16a65f3f370f106e3",
-	"3157d24608e1541291bc20e7d8182fa5030e074bb663a8d10ed424bc",
-	"d26a369bd2753cbbf19162a5492b5d592d2b33e042d79aeeb3d76add",
-	"e343d7dba3614bc63d8c7e247478bc7cfaec41e572ef20b1e6373033",
-	"93e16baf7891d8c6cdaba124ff098d1d9d8df9bfaff8fd1423e57d02",
-	"5\"},\"pivot\":{\"hash\":\"6851e7d5d3200c971307b7f3d02c35dc685",
-	"413215392f1b35fa5ecb53264d963\",\"restart\":\"Always\",\"bridg",
-	"eConfig\":[{\"type\":\"server\",\"port\":3000,\"host\":\"0.0.0.0\"}",
-	"],\"debugMode\":true,\"args\":[\"--config\",\"/etc/config.json\"",
-	"]},\"manifestSet\":{\"threshold\":1,\"members\":[{\"alias\":\"dev",
-	"\",\"pubKey\":\"040f461f922c36cfdf16a65f3f370f106e33157d2460",
-	"8e1541291bc20e7d8182fa5030e074bb663a8d10ed424bcd26a369bd",
-	"2753cbbf19162a5492b5d592d2b33e042d79aeeb3d76adde343d7dba",
-	"3614bc63d8c7e247478bc7cfaec41e572ef20b1e637303393e16baf7",
-	"891d8c6cdaba124ff098d1d9d8df9bfaff8fd1423e57d025\"}]},\"sh",
-	"areSet\":{\"threshold\":1,\"members\":[{\"alias\":\"dev\",\"pubKey",
-	"\":\"040f461f922c36cfdf16a65f3f370f106e33157d24608e1541291",
-	"bc20e7d8182fa5030e074bb663a8d10ed424bcd26a369bd2753cbbf1",
-	"9162a5492b5d592d2b33e042d79aeeb3d76adde343d7dba3614bc63d",
-	"8c7e247478bc7cfaec41e572ef20b1e637303393e16baf7891d8c6cd",
-	"aba124ff098d1d9d8df9bfaff8fd1423e57d025\"}]},\"enclave\":{\"",
-	"pcr0\":\"181bd012baaecfd0bd4d6f617bea65ad5a76413d2a0c09b18",
-	"efe72bff3fdc4b55f7416ec6d88a4d3236ce02d83b5eb8b\",\"pcr1\":",
-	"\"181bd012baaecfd0bd4d6f617bea65ad5a76413d2a0c09b18efe72b",
-	"ff3fdc4b55f7416ec6d88a4d3236ce02d83b5eb8b\",\"pcr2\":\"21b9e",
-	"fbc184807662e966d34f390821309eeac6802309798826296bf3e8be",
-	"c7c10edb30948c90ba67310f7b964fc500a\",\"pcr3\":\"78fce75db17",
+	"4b55f7416ec6d88a4d3236ce02d83b5eb8b\",\"pcr1\":\"181bd01",
+	"2baaecfd0bd4d6f617bea65ad5a76413d2a0c09b18efe72bff3fdc4b",
+	"55f7416ec6d88a4d3236ce02d83b5eb8b\",\"pcr2\":\"21b9efbc1",
+	"84807662e966d34f390821309eeac6802309798826296bf3e8bec7c1",
+	"0edb30948c90ba67310f7b964fc500a\",\"pcr3\":\"78fce75db17",
 	"cd4e0a3fb8dad3ad128ca5e77edbb2b2c7f75329dccd99aa5f6ef4fc",
-	"1f1a452e315b9e98f9e312e6921e6\",\"awsRootCertificate\":\"308",
-	"2021130820196a003020102021100f93175681b90afe11d46ccb4e4e",
-	"7f856300a06082a8648ce3d0403033049310b3009060355040613025",
-	"553310f300d060355040a0c06416d617a6f6e310c300a060355040b0",
-	"c03415753311b301906035504030c126177732e6e6974726f2d656e6",
-	"36c61766573301e170d3139313032383133323830355a170d3439313",
-	"032383134323830355a3049310b3009060355040613025553310f300",
-	"d060355040a0c06416d617a6f6e310c300a060355040b0c034157533",
-	"11b301906035504030c126177732e6e6974726f2d656e636c6176657",
-	"33076301006072a8648ce3d020106052b8104002203620004fc0254e",
-	"ba608c1f36870e29ada90be46383292736e894bfff672d989444b505",
-	"1e534a4b1f6dbe3c0bc581a32b7b176070ede12d69a3fea211b66e75",
-	"2cf7dd1dd095f6f1370f4170843d9dc100121e4cf63012809664487c",
-	"9796284304dc53ff4a3423040300f0603551d130101ff04053003010",
-	"1ff301d0603551d0e041604149025b50dd90547e796c396fa729dcf9",
-	"9a9df4b96300e0603551d0f0101ff040403020186300a06082a8648c",
-	"e3d0403030369003066023100a37f2f91a1c9bd5ee7b8627c1698d25",
-	"5038e1f0343f95b63a9628c3d39809545a11ebcbf2e3b55d8aeee71b",
-	"4c3d6adf3023100a2f39b1605b27028a5dd4ba069b5016e65b4fbde8",
-	"fe0061d6a53197f9cdaf5d943bc61fc2beb03cb6fee8d2302f3dff6\"",
-	",\"qosCommit\":\"\"},\"patchSet\":{\"threshold\":1,\"members\":[{\"",
-	"pubKey\":\"040f461f922c36cfdf16a65f3f370f106e33157d24608e1",
-	"541291bc20e7d8182fa5030e074bb663a8d10ed424bcd26a369bd275",
-	"3cbbf19162a5492b5d592d2b33e042d79aeeb3d76adde343d7dba361",
-	"4bc63d8c7e247478bc7cfaec41e572ef20b1e637303393e16baf7891",
-	"d8c6cdaba124ff098d1d9d8df9bfaff8fd1423e57d025\"}]}},\"mani",
-	"festSetApprovals\":[{\"signature\":\"ecbfbd26aa2be141d991a57",
-	"4bd78aea7fc940f7bf6096db3aa2de0c07d9d9f0c9eef0a061fd64ca",
-	"5e10bf8f2dce831c26fa6eb42838d7aca89bbabca35e47374\",\"memb",
-	"er\":{\"alias\":\"dev\",\"pubKey\":\"040f461f922c36cfdf16a65f3f3",
-	"70f106e33157d24608e1541291bc20e7d8182fa5030e074bb663a8d1",
-	"0ed424bcd26a369bd2753cbbf19162a5492b5d592d2b33e042d79aee",
-	"b3d76adde343d7dba3614bc63d8c7e247478bc7cfaec41e572ef20b1",
-	"e637303393e16baf7891d8c6cdaba124ff098d1d9d8df9bfaff8fd14",
-	"23e57d025\"}}],\"shareSetApprovals\":[]}",
-);
-
-const EXPECTED_MANIFEST_V0_JSON: &str = concat!(
-	"{\"namespace\":{\"name\":\"production/signer\",\"nonce\":31,\"quo",
-	"rumKey\":\"040f461f922c36cfdf16a65f3f370f106e33157d24608e1",
-	"541291bc20e7d8182fa5030e074bb663a8d10ed424bcd26a369bd275",
-	"3cbbf19162a5492b5d592d2b33e042d79aeeb3d76adde343d7dba361",
-	"4bc63d8c7e247478bc7cfaec41e572ef20b1e637303393e16baf7891",
-	"d8c6cdaba124ff098d1d9d8df9bfaff8fd1423e57d025\"},\"pivot\":",
-	"{\"hash\":\"6851e7d5d3200c971307b7f3d02c35dc685413215392f1b",
-	"35fa5ecb53264d963\",\"restart\":\"Always\",\"args\":[\"--config\"",
-	",\"/etc/config.json\"]},\"manifestSet\":{\"threshold\":1,\"memb",
-	"ers\":[{\"alias\":\"dev\",\"pubKey\":\"040f461f922c36cfdf16a65f3",
-	"f370f106e33157d24608e1541291bc20e7d8182fa5030e074bb663a8",
-	"d10ed424bcd26a369bd2753cbbf19162a5492b5d592d2b33e042d79a",
-	"eeb3d76adde343d7dba3614bc63d8c7e247478bc7cfaec41e572ef20",
-	"b1e637303393e16baf7891d8c6cdaba124ff098d1d9d8df9bfaff8fd",
-	"1423e57d025\"}]},\"shareSet\":{\"threshold\":1,\"members\":[{\"a",
-	"lias\":\"dev\",\"pubKey\":\"040f461f922c36cfdf16a65f3f370f106e",
-	"33157d24608e1541291bc20e7d8182fa5030e074bb663a8d10ed424b",
-	"cd26a369bd2753cbbf19162a5492b5d592d2b33e042d79aeeb3d76ad",
-	"de343d7dba3614bc63d8c7e247478bc7cfaec41e572ef20b1e637303",
-	"393e16baf7891d8c6cdaba124ff098d1d9d8df9bfaff8fd1423e57d0",
-	"25\"}]},\"enclave\":{\"pcr0\":\"181bd012baaecfd0bd4d6f617bea65",
-	"ad5a76413d2a0c09b18efe72bff3fdc4b55f7416ec6d88a4d3236ce0",
-	"2d83b5eb8b\",\"pcr1\":\"181bd012baaecfd0bd4d6f617bea65ad5a76",
-	"413d2a0c09b18efe72bff3fdc4b55f7416ec6d88a4d3236ce02d83b5",
-	"eb8b\",\"pcr2\":\"21b9efbc184807662e966d34f390821309eeac6802",
-	"309798826296bf3e8bec7c10edb30948c90ba67310f7b964fc500a\",",
-	"\"pcr3\":\"78fce75db17cd4e0a3fb8dad3ad128ca5e77edbb2b2c7f75",
-	"329dccd99aa5f6ef4fc1f1a452e315b9e98f9e312e6921e6\",\"awsRo",
-	"otCertificate\":\"3082021130820196a003020102021100f9317568",
-	"1b90afe11d46ccb4e4e7f856300a06082a8648ce3d0403033049310b",
-	"3009060355040613025553310f300d060355040a0c06416d617a6f6e",
-	"310c300a060355040b0c03415753311b301906035504030c12617773",
-	"2e6e6974726f2d656e636c61766573301e170d313931303238313332",
-	"3830355a170d3439313032383134323830355a3049310b3009060355",
-	"040613025553310f300d060355040a0c06416d617a6f6e310c300a06",
-	"0355040b0c03415753311b301906035504030c126177732e6e697472",
-	"6f2d656e636c617665733076301006072a8648ce3d020106052b8104",
-	"002203620004fc0254eba608c1f36870e29ada90be46383292736e89",
-	"4bfff672d989444b5051e534a4b1f6dbe3c0bc581a32b7b176070ede",
-	"12d69a3fea211b66e752cf7dd1dd095f6f1370f4170843d9dc100121",
-	"e4cf63012809664487c9796284304dc53ff4a3423040300f0603551d",
-	"130101ff040530030101ff301d0603551d0e041604149025b50dd905",
-	"47e796c396fa729dcf99a9df4b96300e0603551d0f0101ff04040302",
-	"0186300a06082a8648ce3d0403030369003066023100a37f2f91a1c9",
-	"bd5ee7b8627c1698d255038e1f0343f95b63a9628c3d39809545a11e",
-	"bcbf2e3b55d8aeee71b4c3d6adf3023100a2f39b1605b27028a5dd4b",
-	"a069b5016e65b4fbde8fe0061d6a53197f9cdaf5d943bc61fc2beb03",
-	"cb6fee8d2302f3dff6\",\"qosCommit\":\"\"},\"patchSet\":{\"thresho",
-	"ld\":1,\"members\":[{\"pubKey\":\"040f461f922c36cfdf16a65f3f37",
-	"0f106e33157d24608e1541291bc20e7d8182fa5030e074bb663a8d10",
-	"ed424bcd26a369bd2753cbbf19162a5492b5d592d2b33e042d79aeeb",
-	"3d76adde343d7dba3614bc63d8c7e247478bc7cfaec41e572ef20b1e",
-	"637303393e16baf7891d8c6cdaba124ff098d1d9d8df9bfaff8fd142",
-	"3e57d025\"}]}}",
+	"1f1a452e315b9e98f9e312e6921e6\",\"awsRootCertificate\":",
+	"\"3082021130820196a003020102021100f93175681b90afe11d46cc",
+	"b4e4e7f856300a06082a8648ce3d0403033049310b30090603550406",
+	"13025553310f300d060355040a0c06416d617a6f6e310c300a060355",
+	"040b0c03415753311b301906035504030c126177732e6e6974726f2d",
+	"656e636c61766573301e170d3139313032383133323830355a170d34",
+	"39313032383134323830355a3049310b300906035504061302555331",
+	"0f300d060355040a0c06416d617a6f6e310c300a060355040b0c0341",
+	"5753311b301906035504030c126177732e6e6974726f2d656e636c61",
+	"7665733076301006072a8648ce3d020106052b8104002203620004fc",
+	"0254eba608c1f36870e29ada90be46383292736e894bfff672d98944",
+	"4b5051e534a4b1f6dbe3c0bc581a32b7b176070ede12d69a3fea211b",
+	"66e752cf7dd1dd095f6f1370f4170843d9dc100121e4cf6301280966",
+	"4487c9796284304dc53ff4a3423040300f0603551d130101ff040530",
+	"030101ff301d0603551d0e041604149025b50dd90547e796c396fa72",
+	"9dcf99a9df4b96300e0603551d0f0101ff040403020186300a06082a",
+	"8648ce3d0403030369003066023100a37f2f91a1c9bd5ee7b8627c16",
+	"98d255038e1f0343f95b63a9628c3d39809545a11ebcbf2e3b55d8ae",
+	"ee71b4c3d6adf3023100a2f39b1605b27028a5dd4ba069b5016e65b4",
+	"fbde8fe0061d6a53197f9cdaf5d943bc61fc2beb03cb6fee8d2302f3",
+	"dff6\",\"qosCommit\":\"\"},\"patchSet\":{\"threshold\":1",
+	",\"members\":[{\"pubKey\":\"{KEY}\"}]}}",
 );
 
 struct Fixture {
@@ -438,6 +374,17 @@ fn assert_file_borsh_hash(
 	);
 }
 
+/// Fill a golden template with the mock primary public key and `signature`.
+/// The key's bytes are pinned by `qos_hybrid`'s compatibility vectors and
+/// ML-DSA-87 signatures are hedged, so the templates pin everything else.
+fn fill(template: &str, signature: &str) -> String {
+	let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	let key =
+		std::fs::read_to_string(manifest_dir.join("tests/mock/primary.pub"))
+			.unwrap();
+	template.replace("{KEY}", key.trim()).replace("{SIG}", signature)
+}
+
 #[test]
 fn golden_manifest_approval_and_envelope_raw_bytes() {
 	let fixture = Fixture::new("artifacts");
@@ -448,11 +395,22 @@ fn golden_manifest_approval_and_envelope_raw_bytes() {
 		PIVOT_SHA256_HEX
 	);
 
-	assert_file_json_exact(&fixture.manifest_path, EXPECTED_MANIFEST_JSON);
-	assert_file_json_exact(&fixture.approval_path, EXPECTED_APPROVAL_JSON);
+	assert_file_json_exact(
+		&fixture.manifest_path,
+		&fill(EXPECTED_MANIFEST_JSON_TEMPLATE, ""),
+	);
+
+	let approval: serde_json::Value =
+		serde_json::from_slice(&std::fs::read(&fixture.approval_path).unwrap())
+			.unwrap();
+	let signature = approval["signature"].as_str().unwrap().to_owned();
+	assert_file_json_exact(
+		&fixture.approval_path,
+		&fill(EXPECTED_APPROVAL_JSON_TEMPLATE, &signature),
+	);
 	assert_file_json_exact(
 		&fixture.envelope_path,
-		EXPECTED_MANIFEST_ENVELOPE_JSON,
+		&fill(EXPECTED_MANIFEST_ENVELOPE_JSON_TEMPLATE, &signature),
 	);
 	assert_success(&run_qos_client([
 		"json-to-borsh",
@@ -463,6 +421,18 @@ fn golden_manifest_approval_and_envelope_raw_bytes() {
 		"--output-path",
 		fixture.manifest_borsh_path.to_str().unwrap(),
 	]));
+	let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	qos_hybrid::HybridPublic::from_hex_file(
+		manifest_dir.join("tests/mock/primary.pub"),
+	)
+	.unwrap()
+	.verify(
+		&qos_crypto::sha_256(
+			&std::fs::read(&fixture.manifest_borsh_path).unwrap(),
+		),
+		&qos_hex::decode(&signature).unwrap(),
+	)
+	.expect("the approval must be the primary key signing the manifest hash");
 	assert_success(&run_qos_client([
 		"json-to-borsh",
 		"--display-type",
@@ -473,12 +443,8 @@ fn golden_manifest_approval_and_envelope_raw_bytes() {
 		fixture.envelope_borsh_path.to_str().unwrap(),
 	]));
 
-	std::fs::write(&fixture.manifest_v0_json_path, EXPECTED_MANIFEST_V0_JSON)
-		.unwrap();
-	assert_file_json_exact(
-		&fixture.manifest_v0_json_path,
-		EXPECTED_MANIFEST_V0_JSON,
-	);
+	let manifest_v0_json = fill(EXPECTED_MANIFEST_V0_JSON_TEMPLATE, "");
+	std::fs::write(&fixture.manifest_v0_json_path, &manifest_v0_json).unwrap();
 	assert_success(&run_qos_client([
 		"json-to-borsh",
 		"--display-type",
@@ -494,10 +460,11 @@ fn golden_manifest_approval_and_envelope_raw_bytes() {
 		MANIFEST_BORSH_LEN,
 		MANIFEST_BORSH_SHA256_HEX,
 	);
-	assert_file_borsh_hash(
-		&fixture.envelope_borsh_path,
+	assert_eq!(
+		std::fs::read(&fixture.envelope_borsh_path).unwrap().len(),
 		MANIFEST_ENVELOPE_BORSH_LEN,
-		MANIFEST_ENVELOPE_BORSH_SHA256_HEX,
+		"the envelope's hash moves with its hedged signature, so only its \
+		 length is pinned"
 	);
 	assert_file_borsh_hash(
 		&fixture.manifest_v0_borsh_path,
@@ -512,7 +479,7 @@ fn v2_commands_generate_approve_and_envelope_use_json_hash() {
 	use qos_core::protocol::services::boot::{
 		Approval, ManifestEnvelopeV2, ManifestV2, ManifestVersion,
 	};
-	use qos_p256::P256Public;
+	use qos_hybrid::HybridPublic;
 
 	let fixture = Fixture::new("v2_commands");
 
@@ -599,7 +566,7 @@ fn v2_commands_generate_approve_and_envelope_use_json_hash() {
 	let approval: Approval =
 		serde_json::from_slice(&std::fs::read(&fixture.approval_path).unwrap())
 			.unwrap();
-	let pub_key = P256Public::from_bytes(&approval.member.pub_key).unwrap();
+	let pub_key = HybridPublic::from_bytes(&approval.member.pub_key).unwrap();
 	assert!(pub_key.verify(&manifest_hash, &approval.signature).is_ok());
 
 	assert_success(&run_qos_client([
@@ -616,7 +583,7 @@ fn v2_commands_generate_approve_and_envelope_use_json_hash() {
 	assert_eq!(envelope.manifest.version, ManifestVersion::V2);
 	assert_eq!(envelope.manifest_set_approvals.len(), 1);
 	assert!(
-		P256Public::from_bytes(
+		HybridPublic::from_bytes(
 			&envelope.manifest_set_approvals[0].member.pub_key
 		)
 		.unwrap()

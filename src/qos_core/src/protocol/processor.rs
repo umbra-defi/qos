@@ -73,6 +73,7 @@ mod tests {
 			Handles::new(
 				root.join("ephemeral").to_string_lossy().into_owned(),
 				root.join("quorum").to_string_lossy().into_owned(),
+				format!("{}.app", root.join("quorum").to_string_lossy()),
 				root.join("manifest").to_string_lossy().into_owned(),
 				root.join("pivot").to_string_lossy().into_owned(),
 			),

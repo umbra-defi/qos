@@ -2,7 +2,7 @@ mod support;
 
 use std::{path::PathBuf, time::Duration};
 
-use qos_p256::P256Public;
+use qos_hybrid::HybridPublic;
 use qos_test_harness::{
 	BridgeConfig, BuildMode, DnsConfig, Pivot, RunningAppGuard, StartAppSpec,
 	TestRunner,
@@ -254,7 +254,7 @@ fn verify_echo_response(
 ) -> Result<signed_echo::EchoResponse, String> {
 	let response: signed_echo::EchoResponse = serde_json::from_str(body)
 		.map_err(|err| format!("invalid echo response: {err}"))?;
-	let public_key = P256Public::from_bytes(
+	let public_key = HybridPublic::from_bytes(
 		&qos_hex::decode(&response.public_key_hex)
 			.map_err(|err| format!("invalid response public key: {err:?}"))?,
 	)

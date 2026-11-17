@@ -20,8 +20,8 @@ use qos_attestation::{
 use qos_core::protocol::services::boot::{
 	ManifestEnvelopeV2, VersionedManifestEnvelope,
 };
+use qos_hybrid::{HybridPair, HybridPublic};
 use qos_nsm::NsmProvider;
-use qos_p256::{P256Pair, P256Public};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
@@ -117,7 +117,7 @@ pub struct BootProof {
 	cache: AttestationCacheReader,
 	manifest: Vec<u8>,
 	manifest_envelope: Vec<u8>,
-	ephemeral_public_key: P256Public,
+	ephemeral_public_key: HybridPublic,
 }
 
 impl BootProof {
@@ -136,9 +136,10 @@ impl BootProof {
 		ephemeral_key_path: &Path,
 		manifest_path: &Path,
 	) -> Result<(Self, JoinHandle<()>), String> {
-		let ephemeral_public_key = P256Pair::from_hex_file(ephemeral_key_path)
-			.map_err(|e| format!("failed to read ephemeral key: {e:?}"))?
-			.public_key();
+		let ephemeral_public_key =
+			HybridPair::from_hex_file(ephemeral_key_path)
+				.map_err(|e| format!("failed to read ephemeral key: {e:?}"))?
+				.public_key();
 		let manifest_bytes = std::fs::read(manifest_path)
 			.map_err(|e| format!("failed to read manifest: {e}"))?;
 		let envelope: ManifestEnvelopeV2 =
@@ -273,7 +274,7 @@ fn sign_json_payload(
 	config: &Config,
 	payload: &impl Serialize,
 ) -> Result<EchoResponse, AppError> {
-	let quorum_key = P256Pair::from_hex_file(config.quorum_key_path())
+	let quorum_key = HybridPair::from_hex_file(config.quorum_key_path())
 		.map_err(|_| AppError::QuorumKey)?;
 	let signed_payload_json =
 		qos_json::to_string(payload).map_err(|_| AppError::Serialize)?;
@@ -372,7 +373,7 @@ struct HealthResponse {
 #[cfg(test)]
 mod tests {
 	use axum::{http::StatusCode, response::IntoResponse};
-	use qos_p256::{P256Pair, P256Public};
+	use qos_hybrid::{HybridPair, HybridPublic};
 
 	use crate::{
 		Config, SIGNED_PAYLOAD_DOMAIN, SignedGetUrlPayload, health,
@@ -388,7 +389,7 @@ mod tests {
 	fn signs_get_url_payload_shape() {
 		let key_path = std::env::temp_dir()
 			.join(format!("signed-echo-get-url-{}.secret", std::process::id()));
-		let pair = P256Pair::generate().unwrap();
+		let pair = HybridPair::generate().unwrap();
 		pair.to_hex_file(&key_path).unwrap();
 		let config = Config::new(&key_path);
 		let payload = SignedGetUrlPayload {
@@ -402,7 +403,7 @@ mod tests {
 		let response = sign_json_payload(&config, &payload).unwrap();
 		let signed_payload: SignedGetUrlPayload =
 			serde_json::from_str(&response.signed_payload_json).unwrap();
-		let public_key = P256Public::from_bytes(
+		let public_key = HybridPublic::from_bytes(
 			&qos_hex::decode(&response.public_key_hex).unwrap(),
 		)
 		.unwrap();

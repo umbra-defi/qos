@@ -1,11 +1,11 @@
 [package]
-name = "qos_nsm"
+name = "umbra_qos_nsm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "AWS Nitro Secure Module attestation endpoints and types"
-repository = "https://github.com/tkhq/qos"
+repository = "https://github.com/umbra-defi/qos"
 readme = "README.md"
 keywords = ["quorumos", "nitro", "enclave", "attestation", "aws"]
 categories = ["cryptography"]
@@ -35,3 +35,7 @@ hex-literal = { workspace = true }
 # Never use in production - support for mock NSM
 mock = []
 mock_realtime = []
+
+[lib]
+name = "qos_nsm"
+path = "src/lib.rs"

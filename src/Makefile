@@ -17,6 +17,7 @@ local-enclave:
 		--usock ./dev.sock \
 		--mock \
 		--quorum-file ./local-enclave/qos.quorum.key \
+		--app-key-file ./local-enclave/qos.app.key \
 		--pivot-file ./local-enclave/qos.pivot.bin \
 		--ephemeral-file ./local-enclave/qos.ephemeral.key \
 		--manifest-file ./local-enclave/qos.manifest
@@ -99,10 +100,10 @@ test:
 	@# When we build the workspace it resolves with the qos_core mock feature
 	@# enabled. However some tests require it disable, so we test just qos_core
 	@# by itself.
-	cargo test --locked -p qos_core
+	cargo test --locked -p umbra_qos_core
 	@# The workspace build leaves qos_attestation's optional features off, so
 	@# test the cache explicitly.
-	cargo test --locked -p qos_attestation --all-features
+	cargo test --locked -p umbra_qos_attestation --all-features
 
 .PHONY: build-linux-only
 build-linux-only: qos_system qos_aws init qos_enclave qos_bridge

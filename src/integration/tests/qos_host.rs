@@ -29,6 +29,7 @@ async fn connects_and_gets_info() {
 
 	let enclave_socket = format!("{TEST_ENCLAVE_SOCKET}_0"); // manually pick the 1st one
 	let secret_path = PathWrapper::from("/tmp/qos_host_test.secret");
+	let app_key_path = PathWrapper::from("/tmp/qos_host_test.app.secret");
 	let manifest_path = PathWrapper::from("/tmp/qos_host_test.manifest");
 
 	// For our sanity, ensure the secret does not yet exist
@@ -43,6 +44,8 @@ async fn connects_and_gets_info() {
 				TEST_ENCLAVE_SOCKET,
 				"--quorum-file",
 				secret_path.to_str().unwrap(),
+				"--app-key-file",
+				app_key_path.to_str().unwrap(),
 				"--pivot-file",
 				PIVOT_OK_PATH,
 				"--ephemeral-file",

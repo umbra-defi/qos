@@ -10,6 +10,7 @@ async fn dev_boot_e2e() {
 	let _ = PathWrapper::from(PIVOT_OK3_SUCCESS_FILE);
 	let usock = tmp.join("sock.sock");
 	let secret_path = tmp.join("quorum.secret");
+	let app_key_path = tmp.join("app.secret");
 	let pivot_path = tmp.join("pivot.pivot");
 	let manifest_path = tmp.join("manifest.manifest");
 	let eph_path = tmp.join("eph.secret");
@@ -24,6 +25,8 @@ async fn dev_boot_e2e() {
 				usock.to_str().unwrap(),
 				"--quorum-file",
 				secret_path.to_str().unwrap(),
+				"--app-key-file",
+				app_key_path.to_str().unwrap(),
 				"--pivot-file",
 				pivot_path.to_str().unwrap(),
 				"--ephemeral-file",

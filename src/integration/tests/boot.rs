@@ -22,7 +22,7 @@ use qos_core::protocol::{
 };
 use qos_crypto::sha_256;
 use qos_host::EnclaveInfo;
-use qos_p256::P256Pair;
+use qos_hybrid::HybridPair;
 use qos_test_primitives::{ChildWrapper, PathWrapper};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -37,6 +37,7 @@ async fn standard_boot_e2e() {
 
 	let usock = PathWrapper::from(tmp.join("boot_e2e.sock"));
 	let secret_path = PathWrapper::from(tmp.join("boot_e2e.secret"));
+	let app_key_path = PathWrapper::from(tmp.join("boot_e2e.app.secret"));
 	let pivot_path = PathWrapper::from(tmp.join("boot_e2e.pivot"));
 	let manifest_path = PathWrapper::from(tmp.join("boot_e2e.manifest"));
 	let eph_path = PathWrapper::from(tmp.join("ephemeral_key.secret"));
@@ -255,13 +256,18 @@ async fn standard_boot_e2e() {
 		// Read in the generated approval to check it was created correctly
 		let approval: Approval =
 			serde_json::from_slice(&fs::read(approval_path).unwrap()).unwrap();
-		let personal_pair = P256Pair::from_hex_file(
+		let personal_pair = HybridPair::from_hex_file(
 			personal_dir(alias).join(format!("{alias}.secret")),
 		)
 		.unwrap();
 
-		let signature = personal_pair.sign(&manifest.qos_hash()).unwrap();
-		assert_eq!(approval.signature, signature);
+		assert!(
+			personal_pair
+				.public_key()
+				.verify(&manifest.qos_hash(), &approval.signature)
+				.is_ok(),
+			"the approval must be this member signing the manifest hash"
+		);
 
 		assert_eq!(approval.member.alias, alias);
 		assert_eq!(
@@ -278,6 +284,8 @@ async fn standard_boot_e2e() {
 				usock.to_str().unwrap(),
 				"--quorum-file",
 				secret_path.to_str().unwrap(),
+				"--app-key-file",
+				app_key_path.to_str().unwrap(),
 				"--pivot-file",
 				pivot_path.to_str().unwrap(),
 				"--ephemeral-file",

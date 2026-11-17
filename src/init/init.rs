@@ -2,7 +2,7 @@ use qos_core::{
 	handles::Handles,
 	io::{SocketAddress, VMADDR_NO_FLAGS},
 	reaper::Reaper,
-	EPHEMERAL_KEY_FILE, MANIFEST_FILE, PIVOT_FILE, QUORUM_FILE,
+	APP_KEY_FILE, EPHEMERAL_KEY_FILE, MANIFEST_FILE, PIVOT_FILE, QUORUM_FILE,
 };
 use qos_nsm::Nsm;
 use qos_system::{dmesg, freopen, get_local_cid, mount, reboot};
@@ -76,6 +76,7 @@ async fn main() {
 	let handles = Handles::new(
 		EPHEMERAL_KEY_FILE.to_string(),
 		QUORUM_FILE.to_string(),
+		APP_KEY_FILE.to_string(),
 		MANIFEST_FILE.to_string(),
 		PIVOT_FILE.to_string(),
 	);

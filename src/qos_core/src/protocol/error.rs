@@ -1,6 +1,6 @@
 //! Quorum protocol error
 use borsh::{BorshDeserialize, BorshSerialize};
-use qos_p256::P256Error;
+use qos_hybrid::HybridError;
 
 use crate::{
 	client::ClientError,
@@ -65,7 +65,7 @@ pub enum ProtocolError {
 	CannotModifyPostPivotStatic,
 	/// For some reason the Ephemeral could not be read from the file
 	/// system.
-	FailedToGetEphemeralKey(P256Error),
+	FailedToGetEphemeralKey(HybridError),
 	/// Failed to write the Ephemeral key to the file system.
 	FailedToPutEphemeralKey,
 	/// Failed to rotate the ephemeral key because the underlying file is missing.
@@ -74,7 +74,7 @@ pub enum ProtocolError {
 	CannotDeleteEphemeralKey(String),
 	/// For some reason the Quorum Key could not be read from the file
 	/// system.
-	FailedToGetQuorumKey(P256Error),
+	FailedToGetQuorumKey(HybridError),
 	/// Failed to put the quorum key into the file system
 	FailedToPutQuorumKey,
 	/// For some reason the manifest envelope could not be read from the file
@@ -116,10 +116,10 @@ pub enum ProtocolError {
 	NotShareSetMember,
 	/// Not a member of the [`boot::ManifestSet`].
 	NotManifestSetMember,
-	/// `qos_p256` Error wrapper.
-	P256Error(qos_p256::P256Error),
-	/// Error with trying to read p256 DR public key.
-	InvalidP256DRKey(qos_p256::P256Error),
+	/// `qos_hybrid` Error wrapper.
+	HybridError(qos_hybrid::HybridError),
+	/// Error with trying to read the hybrid DR public key.
+	InvalidDRKey(qos_hybrid::HybridError),
 	/// The provisioned secret is the incorrect length.
 	IncorrectSecretLen,
 	/// An error from the attest crate.
@@ -200,6 +200,24 @@ pub enum ProtocolError {
 	/// Genesis messages are only supported on the canonical JSON wire
 	/// encoding; legacy Borsh genesis is not supported.
 	LegacyGenesisNotSupported,
+	/// The ephemeral key does not match the attestation binding in the
+	/// attestation document's `public_key` field.
+	EphemeralKeyNotAttested,
+	/// Failed to read the app key.
+	FailedToGetAppKey(HybridError),
+	/// Failed to write the app key.
+	FailedToPutAppKey,
+	/// The forwarded key carried no app key, and this boot was told to
+	/// receive one rather than mint it.
+	AppKeyNotForwarded,
+	/// The forwarded key carried an encrypted app key without the sending
+	/// enclave's attestation, or the reverse.
+	AppKeyTransferIncomplete,
+	/// The sending enclave's attestation does not prove it runs this
+	/// enclave's manifest and sealed this exact app key to this enclave.
+	AppKeyTransferNotAttested(String),
+	/// The decrypted app key is not a master seed.
+	InvalidAppKeySecret,
 }
 
 impl From<std::io::Error> for ProtocolError {
@@ -231,9 +249,9 @@ impl From<ClientError> for ProtocolError {
 	}
 }
 
-impl From<qos_p256::P256Error> for ProtocolError {
-	fn from(err: qos_p256::P256Error) -> Self {
-		Self::P256Error(err)
+impl From<qos_hybrid::HybridError> for ProtocolError {
+	fn from(err: qos_hybrid::HybridError) -> Self {
+		Self::HybridError(err)
 	}
 }
 
@@ -339,9 +357,9 @@ impl std::fmt::Display for ProtocolError {
 			Self::NotManifestSetMember => {
 				write!(f, "not a manifest set member")
 			}
-			Self::P256Error(e) => write!(f, "P256 error: {e:?}"),
-			Self::InvalidP256DRKey(e) => {
-				write!(f, "invalid P256 DR key: {e:?}")
+			Self::HybridError(e) => write!(f, "hybrid key error: {e:?}"),
+			Self::InvalidDRKey(e) => {
+				write!(f, "invalid hybrid DR key: {e:?}")
 			}
 			Self::IncorrectSecretLen => write!(f, "incorrect secret length"),
 			Self::QosAttestError(e) => write!(f, "attestation error: {e}"),
@@ -408,6 +426,27 @@ impl std::fmt::Display for ProtocolError {
 					f,
 					"genesis messages are only supported on the JSON wire encoding"
 				)
+			}
+			Self::EphemeralKeyNotAttested => {
+				write!(f, "ephemeral key does not match the attested binding")
+			}
+			Self::FailedToGetAppKey(e) => {
+				write!(f, "failed to get the app key: {e:?}")
+			}
+			Self::FailedToPutAppKey => write!(f, "failed to put the app key"),
+			Self::AppKeyNotForwarded => write!(
+				f,
+				"no app key was forwarded and this boot may not mint one"
+			),
+			Self::AppKeyTransferIncomplete => write!(
+				f,
+				"an app key transfer needs both the encrypted key and the sender's attestation"
+			),
+			Self::AppKeyTransferNotAttested(e) => {
+				write!(f, "app key sender is not attested: {e}")
+			}
+			Self::InvalidAppKeySecret => {
+				write!(f, "decrypted app key is not a master seed")
 			}
 		}
 	}

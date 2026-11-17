@@ -2,7 +2,7 @@
 
 This document is for QOS app authors who need to decide which enclave key to
 use from a pivot app. It explains how the reaper, pivot app, manifest, quorum
-key, and ephemeral key fit together.
+key, app key and ephemeral key fit together.
 
 For Boot Proof and App Proof concepts and verification details, see Turnkey's
 [Proofs and Verification](https://docs.turnkey.com/features/verifiable-cloud/proofs-and-verification)
@@ -19,7 +19,7 @@ pivot app only after the manifest, pivot binary, and quorum key are present.
 flowchart TB
     subgraph Enclave["QOS enclave"]
         Reaper["reaper"]
-        Files["files<br/>/qos.ephemeral.key<br/>/qos.quorum.key"]
+        Files["files<br/>/qos.ephemeral.key<br/>/qos.app.key<br/>/qos.quorum.key"]
         Pivot["pivot app"]
 
         Reaper -->|"write"| Files
@@ -52,6 +52,7 @@ finished provisioning key material.
 | --- | --- | --- |
 | `/qos.manifest` | The approved QOS manifest envelope. | Inspect the namespace, nonce, pivot configuration, quorum public key, quorum sets, and enclave PCR configuration. |
 | `/qos.ephemeral.key` | The current enclave Ephemeral Key. | Sign enclave results, create App Proofs, and decrypt data encrypted to this specific enclave. |
+| `/qos.app.key` | The App Key every enclave of this manifest shares. | Receive data any enclave of this manifest may open, such as a transport key clients encrypt to, without that data being recoverable outside an enclave. |
 | `/qos.quorum.key` | The namespace Quorum Key. | Encrypt long-lived state and, when exact enclave attribution is not required, sign long-lived data. |
 
 During standard boot and key forwarding, QOS creates both a setup Ephemeral Key
@@ -78,6 +79,31 @@ instances, restarts, horizontal scaling, and application upgrades. Common uses:
 
 - encrypting application state that should exist across application versions and enclave instances;
 - signing data when the verifier only needs to know that a valid namespace enclave produced the signature.
+
+## App Key
+
+The App Key is shared by every enclave that boots one manifest, and exists only
+inside those enclaves:
+
+- one boot per manifest mints it: the boot the share set provisions, or a
+  key-forward boot the host sends with `app_key_mode: Mint`;
+- every other boot of the manifest receives it by key forward from an enclave of
+  the same manifest, sealed to its setup Ephemeral Key and attested by the
+  sender (see [Key Forward](key_forward.md));
+- it is never split into shares or wrapped to the disaster-recovery key, so no
+  share threshold or key holder can rebuild it.
+
+A new manifest gets a new App Key; nothing carries across. When every enclave of
+a manifest is gone, its App Key is gone, and so is anything sealed to it. The
+host chooses which boot mints, so a host can make two boots of one manifest mint
+two keys. Neither leaks, since both exist only in enclaves; whoever consumes the
+App Key decides which one is current, for example by accepting the latest
+attested registration.
+
+Use the App Key when data should be readable by any enclave of this manifest
+but never outside one. QOS does not attest the App Key itself: a pivot app that
+publishes its public key does so in its own attestation request, with the key
+or its digest in `user_data`, while PCR17 and PCR18 bind the manifest.
 
 ## Ephemeral Key
 

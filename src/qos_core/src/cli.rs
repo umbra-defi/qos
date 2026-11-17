@@ -5,7 +5,7 @@ use std::env;
 use qos_nsm::{Nsm, NsmProvider};
 
 use crate::{
-	EPHEMERAL_KEY_FILE, MANIFEST_FILE, PIVOT_FILE, QUORUM_FILE,
+	APP_KEY_FILE, EPHEMERAL_KEY_FILE, MANIFEST_FILE, PIVOT_FILE, QUORUM_FILE,
 	handles::Handles,
 	io::SocketAddress,
 	parser::{GetParserForOptions, OptionsParser, Parser, Token},
@@ -25,6 +25,8 @@ const MOCK: &str = "mock";
 const MOCK_PCRS_OPT: &str = "mock-pcrs";
 /// Name for the option to specify the quorum key file.
 pub const QUORUM_FILE_OPT: &str = "quorum-file";
+/// Name for the option to specify the app key file.
+pub const APP_KEY_FILE_OPT: &str = "app-key-file";
 /// Name for the option to specify the pivot key file.
 pub const PIVOT_FILE_OPT: &str = "pivot-file";
 /// Name for the option to specify the ephemeral key file.
@@ -94,6 +96,14 @@ impl EnclaveOpts {
 	fn quorum_file(&self) -> String {
 		self.parsed
 			.single(QUORUM_FILE_OPT)
+			.expect("has a default value.")
+			.clone()
+	}
+
+	/// Defaults to [`APP_KEY_FILE`] if not explicitly specified
+	fn app_key_file(&self) -> String {
+		self.parsed
+			.single(APP_KEY_FILE_OPT)
 			.expect("has a default value.")
 			.clone()
 	}
@@ -193,6 +203,7 @@ impl CLI {
 					&Handles::new(
 						opts.ephemeral_file(),
 						opts.quorum_file(),
+						opts.app_key_file(),
 						opts.manifest_file(),
 						opts.pivot_file(),
 					),
@@ -239,6 +250,11 @@ impl GetParserForOptions for EnclaveParser {
 				Token::new(QUORUM_FILE_OPT, "path to file where the Quorum Key secret should be stored. Use default for production.")
 					.takes_value(true)
 					.default_value(QUORUM_FILE)
+			)
+			.token(
+				Token::new(APP_KEY_FILE_OPT, "path to file where the app key secret should be stored. Use default for production.")
+					.takes_value(true)
+					.default_value(APP_KEY_FILE)
 			)
 			.token(
 				Token::new(PIVOT_FILE_OPT, "path to file where the Pivot Binary should be written. Use default for production.")

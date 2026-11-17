@@ -9,13 +9,13 @@ use borsh::de::BorshDeserialize;
 use integration::{LOCAL_HOST, PCR3_PRE_IMAGE_PATH, QOS_DIST_DIR};
 use qos_core::protocol::services::genesis::GenesisOutput;
 use qos_crypto::{sha_512, shamir::shares_reconstruct};
+use qos_hybrid::{HybridPair, HybridPublic};
 use qos_nsm::nitro::unsafe_attestation_doc_from_der;
-use qos_p256::{P256Pair, P256Public};
 use qos_test_primitives::{ChildWrapper, PathWrapper};
 use rand::{rng, seq::SliceRandom};
 
-const DR_KEY_PUBLIC_PATH: &str = "./mock/mock_p256_dr.pub";
-const DR_KEY_PRIVATE_PATH: &str = "./mock/mock_p256_dr.secret.keep";
+const DR_KEY_PUBLIC_PATH: &str = "./mock/mock_dr.pub";
+const DR_KEY_PRIVATE_PATH: &str = "./mock/mock_dr.secret.keep";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn genesis_e2e() {
@@ -25,6 +25,7 @@ async fn genesis_e2e() {
 
 	let usock = tmp_dir.join("genesis_e2e.sock");
 	let secret_path = tmp_dir.join("genesis_e2e.secret");
+	let app_key_path = tmp_dir.join("genesis_e2e.app.secret");
 	let pivot_path = tmp_dir.join("genesis_e2e.pivot");
 	let manifest_path = tmp_dir.join("manifest.manifest");
 
@@ -107,6 +108,8 @@ async fn genesis_e2e() {
 				usock.to_str().unwrap(),
 				"--quorum-file",
 				secret_path.to_str().unwrap(),
+				"--app-key-file",
+				app_key_path.to_str().unwrap(),
 				"--pivot-file",
 				pivot_path.to_str().unwrap(),
 				"--mock",
@@ -184,7 +187,7 @@ async fn genesis_e2e() {
 			let share_key_path =
 				Path::new(&*personal_dir(alias)).join(private_share_key);
 
-			let share_pair = P256Pair::from_hex_file(share_key_path).unwrap();
+			let share_pair = HybridPair::from_hex_file(share_key_path).unwrap();
 
 			// Decrypt the share with the personal key
 			let plain_text_share =
@@ -198,16 +201,16 @@ async fn genesis_e2e() {
 
 	// Try recovering from a random permutation
 	decrypted_shares.shuffle(&mut rng());
-	let master_secret: zeroize::Zeroizing<[u8; qos_p256::MASTER_SEED_LEN]> =
+	let master_secret: zeroize::Zeroizing<[u8; qos_hybrid::MASTER_SEED_LEN]> =
 		zeroize::Zeroizing::new(
 			shares_reconstruct(&decrypted_shares[0..threshold]).unwrap()[..]
 				.try_into()
 				.unwrap(),
 		);
-	let reconstructed = P256Pair::from_master_seed(&master_secret).unwrap();
+	let reconstructed = HybridPair::from_master_seed(&master_secret).unwrap();
 	assert!(
 		reconstructed.public_key()
-			== P256Public::from_bytes(&genesis_output.quorum_key).unwrap()
+			== HybridPublic::from_bytes(&genesis_output.quorum_key).unwrap()
 	);
 
 	// -- CLIENT make sure each user can run `after-genesis` against their
@@ -244,7 +247,7 @@ async fn genesis_e2e() {
 			Path::new(&personal_dir(user)).join(format!("{user}.secret"));
 		let share_path =
 			Path::new(&personal_dir(user)).join(format!("{user}.share"));
-		let share_key_pair = P256Pair::from_hex_file(share_key_path).unwrap();
+		let share_key_pair = HybridPair::from_hex_file(share_key_path).unwrap();
 
 		// Check the share is encrypted to personal key
 		let share =
@@ -259,7 +262,7 @@ async fn genesis_e2e() {
 	}
 
 	// Check that we can use the DR key to decrypt the quorum key
-	let dr_key_pair = P256Pair::from_hex_file(DR_KEY_PRIVATE_PATH).unwrap();
+	let dr_key_pair = HybridPair::from_hex_file(DR_KEY_PRIVATE_PATH).unwrap();
 
 	let dr_wrapped_quorum_key = fs::read(dr_wrapped_quorum_key_path).unwrap();
 	let master_seed: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new(
@@ -267,7 +270,7 @@ async fn genesis_e2e() {
 			.try_into()
 			.unwrap(),
 	);
-	let pair = P256Pair::from_master_seed(&master_seed).unwrap();
+	let pair = HybridPair::from_master_seed(&master_seed).unwrap();
 	assert!(pair == reconstructed);
 
 	let dr_artifacts_contents = fs::File::open(dr_artifacts_path).unwrap();

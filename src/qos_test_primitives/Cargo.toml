@@ -1,11 +1,11 @@
 [package]
-name = "qos_test_primitives"
+name = "umbra_qos_test_primitives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Test utilities and helper primitives for QuorumOS crates"
-repository = "https://github.com/tkhq/qos"
+repository = "https://github.com/umbra-defi/qos"
 readme = "README.md"
 
 # Override workspace lints for this test crate
@@ -19,3 +19,7 @@ module_name_repetitions = "allow"
 
 [dependencies]
 nix = { workspace = true, default-features = false, features = ["signal"] }
+
+[lib]
+name = "qos_test_primitives"
+path = "src/lib.rs"

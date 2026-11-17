@@ -241,7 +241,7 @@ dependencies = [
  "miniz_oxide",
  "object",
  "rustc-demangle",
- "windows-targets 0.52.6",
+ "windows-targets",
 ]
 
 [[package]]
@@ -390,7 +390,7 @@ dependencies = [
  "iana-time-zone",
  "num-traits",
  "serde",
- "windows-targets 0.52.6",
+ "windows-targets",
 ]
 
 [[package]]
@@ -533,6 +533,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "curve25519-dalek"
+version = "4.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "curve25519-dalek-derive",
+ "fiat-crypto",
+ "rustc_version",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -618,15 +644,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "des"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
-dependencies = [
- "cipher",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -694,7 +711,6 @@ dependencies = [
  "generic-array 0.14.7",
  "group",
  "hkdf",
- "pem-rfc7468",
  "pkcs8",
  "rand_core 0.6.4",
  "sec1",
@@ -744,10 +760,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "fiat-crypto"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
+
+[[package]]
+name = "fips203"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8bdb6454f692ca2a2b45cd554c6828c639d7f9c968cf83a678899ec4443a280"
+dependencies = [
+ "rand_core 0.6.4",
+ "sha3",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "fips204"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9fb5a367b9846933e271a3c2a992930743f82ae5e8cb7faa780715a80fa0b15"
+dependencies = [
+ "rand_core 0.6.4",
+ "sha2",
+ "sha3",
+ "zeroize",
+]
 
 [[package]]
 name = "flagset"
@@ -1386,15 +1432,8 @@ dependencies = [
  "axum",
  "borsh",
  "futures",
- "qos_core 0.16.2",
- "qos_core 0.7.0",
- "qos_crypto 0.16.2",
- "qos_hex 0.16.2",
+ "qos_core",
  "qos_host",
- "qos_net",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
- "qos_test_primitives",
  "rand 0.9.4",
  "rustls",
  "serde",
@@ -1402,6 +1441,13 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-rustls",
+ "umbra_qos_core",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_hybrid",
+ "umbra_qos_net",
+ "umbra_qos_nsm",
+ "umbra_qos_test_primitives",
  "ureq",
  "url",
  "webpki-roots 1.0.10",
@@ -1517,9 +1563,6 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-dependencies = [
- "spin",
-]
 
 [[package]]
 name = "leb128fmt"
@@ -1542,12 +1585,6 @@ dependencies = [
  "arbitrary",
  "cc",
 ]
-
-[[package]]
-name = "libm"
-version = "0.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ec2a862134d2a7d32d7983ddcdd1c4923530833c9f2ea1a44fc5fa473989058"
 
 [[package]]
 name = "linked-hash-map"
@@ -1621,12 +1658,6 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
-
-[[package]]
-name = "minimal-lexical"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "miniz_oxide"
@@ -1705,16 +1736,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nom"
-version = "7.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
-dependencies = [
- "memchr",
- "minimal-lexical",
-]
-
-[[package]]
 name = "num"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1737,23 +1758,6 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rand 0.8.6",
-]
-
-[[package]]
-name = "num-bigint-dig"
-version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e661dda6640fad38e827a6d4a310ff4763082116fe217f279885c97f511bb0b7"
-dependencies = [
- "lazy_static",
- "libm",
- "num-integer",
- "num-iter",
- "num-traits",
- "rand 0.8.6",
- "serde",
- "smallvec",
- "zeroize",
 ]
 
 [[package]]
@@ -1810,7 +1814,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
- "libm",
 ]
 
 [[package]]
@@ -1882,36 +1885,7 @@ dependencies = [
  "libc",
  "redox_syscall",
  "smallvec",
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "pbkdf2"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
-dependencies = [
- "digest",
- "hmac",
-]
-
-[[package]]
-name = "pcsc"
-version = "2.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45ed9d7f816b7d9ce9ddb0062dd2f393b3af31411a95a35411809b4b9116ea08"
-dependencies = [
- "bitflags 1.3.2",
- "pcsc-sys",
-]
-
-[[package]]
-name = "pcsc-sys"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b09e9ba80f2c4d167f936d27594f7248bca3295921ffbfa44a24b339b6cb7403"
-dependencies = [
- "pkg-config",
+ "windows-targets",
 ]
 
 [[package]]
@@ -1940,17 +1914,6 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
-
-[[package]]
-name = "pkcs1"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f"
-dependencies = [
- "der",
- "pkcs8",
- "spki",
-]
 
 [[package]]
 name = "pkcs8"
@@ -2059,56 +2022,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos_attestation"
-version = "0.16.2"
-dependencies = [
- "aws-nitro-enclaves-cose",
- "aws-nitro-enclaves-nsm-api",
- "p384",
- "qos_core 0.16.2",
- "qos_crypto 0.16.2",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
- "serde_bytes",
- "sha2",
- "thiserror",
- "tokio",
- "x509-cert",
-]
-
-[[package]]
 name = "qos_bridge"
 version = "0.16.2"
 dependencies = [
- "qos_core 0.16.2",
  "qos_host",
  "tokio",
+ "umbra_qos_core",
  "ureq",
-]
-
-[[package]]
-name = "qos_client"
-version = "0.16.2"
-dependencies = [
- "aws-nitro-enclaves-nsm-api",
- "borsh",
- "der",
- "lazy_static",
- "p256",
- "qos_core 0.16.2",
- "qos_crypto 0.16.2",
- "qos_hex 0.16.2",
- "qos_json",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
- "qos_test_primitives",
- "rand_core 0.9.3",
- "rpassword",
- "serde_json",
- "ureq",
- "x509-cert",
- "yubikey",
- "zeroize",
 ]
 
 [[package]]
@@ -2122,42 +2042,15 @@ dependencies = [
  "futures",
  "libc",
  "nix 0.30.1",
- "qos_crypto 0.7.0",
- "qos_hex 0.7.0",
- "qos_nsm 0.7.0",
- "qos_p256 0.7.0",
+ "qos_crypto",
+ "qos_hex",
+ "qos_nsm",
+ "qos_p256",
  "serde",
  "serde_bytes",
  "serde_json",
  "tokio",
  "tokio-vsock",
-]
-
-[[package]]
-name = "qos_core"
-version = "0.16.2"
-dependencies = [
- "aws-nitro-enclaves-nsm-api",
- "borsh",
- "etherparse",
- "futures",
- "libc",
- "nix 0.30.1",
- "qos_crypto 0.16.2",
- "qos_hex 0.16.2",
- "qos_json",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
- "qos_test_primitives",
- "rustls",
- "serde",
- "serde_bytes",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-vsock",
- "webpki-roots 1.0.10",
- "zeroize",
 ]
 
 [[package]]
@@ -2173,24 +2066,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos_crypto"
-version = "0.16.2"
-dependencies = [
- "qos_hex 0.16.2",
- "rand 0.9.4",
- "sha2",
- "thiserror",
- "vsss-rs",
- "zeroize",
-]
-
-[[package]]
 name = "qos_crypto_fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
- "qos_crypto 0.16.2",
+ "umbra_qos_crypto",
  "zeroize",
 ]
 
@@ -2204,51 +2085,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos_hex"
-version = "0.16.2"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "qos_host"
 version = "0.16.2"
 dependencies = [
  "axum",
- "qos_core 0.16.2",
- "qos_hex 0.16.2",
- "qos_nsm 0.16.2",
  "serde",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "qos_json"
-version = "0.16.2"
-dependencies = [
- "qos_hex 0.16.2",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "qos_net"
-version = "0.16.2"
-dependencies = [
- "borsh",
- "chunked_transfer",
- "futures",
- "hickory-resolver",
- "httparse",
- "qos_core 0.16.2",
- "qos_test_primitives",
- "rustls",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "webpki-roots 1.0.10",
+ "umbra_qos_core",
+ "umbra_qos_hex",
+ "umbra_qos_nsm",
 ]
 
 [[package]]
@@ -2257,7 +2103,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
- "qos_net",
+ "umbra_qos_net",
 ]
 
 [[package]]
@@ -2270,25 +2116,7 @@ dependencies = [
  "aws-nitro-enclaves-nsm-api",
  "borsh",
  "p384",
- "qos_hex 0.7.0",
- "serde_bytes",
- "sha2",
- "webpki",
- "x509-cert",
-]
-
-[[package]]
-name = "qos_nsm"
-version = "0.16.2"
-dependencies = [
- "aws-nitro-enclaves-cose",
- "aws-nitro-enclaves-nsm-api",
- "borsh",
- "hex-literal",
- "p384",
- "qos_hex 0.16.2",
- "qos_json",
- "serde",
+ "qos_hex",
  "serde_bytes",
  "sha2",
  "webpki",
@@ -2300,8 +2128,8 @@ name = "qos_nsm_fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "qos_hex 0.16.2",
- "qos_nsm 0.16.2",
+ "umbra_qos_hex",
+ "umbra_qos_nsm",
 ]
 
 [[package]]
@@ -2315,23 +2143,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "p256",
- "qos_hex 0.7.0",
- "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "qos_p256"
-version = "0.16.2"
-dependencies = [
- "aes-gcm",
- "borsh",
- "hkdf",
- "hmac",
- "p256",
- "qos_hex 0.16.2",
- "qos_test_primitives",
- "serde",
+ "qos_hex",
  "sha2",
  "zeroize",
 ]
@@ -2342,7 +2154,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
- "qos_p256 0.16.2",
+ "umbra_qos_p256",
  "zeroize",
 ]
 
@@ -2350,23 +2162,16 @@ dependencies = [
 name = "qos_test_harness"
 version = "0.16.2"
 dependencies = [
- "qos_core 0.16.2",
- "qos_crypto 0.16.2",
- "qos_hex 0.16.2",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
  "serde_json",
  "signed_echo",
  "thiserror",
  "tokio",
+ "umbra_qos_core",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_hybrid",
+ "umbra_qos_nsm",
  "ureq",
-]
-
-[[package]]
-name = "qos_test_primitives"
-version = "0.16.2"
-dependencies = [
- "nix 0.30.1",
 ]
 
 [[package]]
@@ -2396,8 +2201,6 @@ version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
 dependencies = [
- "libc",
- "rand_chacha 0.3.1",
  "rand_core 0.6.4",
 ]
 
@@ -2407,7 +2210,7 @@ version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
 dependencies = [
- "rand_chacha 0.9.0",
+ "rand_chacha",
  "rand_core 0.9.3",
 ]
 
@@ -2420,16 +2223,6 @@ dependencies = [
  "chacha20",
  "getrandom 0.4.1",
  "rand_core 0.10.0",
-]
-
-[[package]]
-name = "rand_chacha"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
-dependencies = [
- "ppv-lite86",
- "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -2517,48 +2310,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rpassword"
-version = "7.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2da316a15f47e3d053de9cb2c439650bd8fa4aaeb9365f2e5f27f492ff73c196"
-dependencies = [
- "libc",
- "rtoolbox",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rsa"
-version = "0.9.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d"
-dependencies = [
- "const-oid",
- "digest",
- "num-bigint-dig",
- "num-integer",
- "num-traits",
- "pkcs1",
- "pkcs8",
- "rand_core 0.6.4",
- "sha2",
- "signature",
- "spki",
- "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "rtoolbox"
-version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c247d24e63230cdb56463ae328478bd5eac8b8faa8c69461a77e8e323afac90e"
-dependencies = [
- "libc",
- "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2675,15 +2426,6 @@ dependencies = [
  "generic-array 0.14.7",
  "pkcs8",
  "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "secrecy"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
-dependencies = [
  "zeroize",
 ]
 
@@ -2831,17 +2573,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha1"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2892,15 +2623,15 @@ name = "signed_echo"
 version = "0.16.2"
 dependencies = [
  "axum",
- "qos_attestation",
- "qos_core 0.16.2",
- "qos_hex 0.16.2",
- "qos_json",
- "qos_nsm 0.16.2",
- "qos_p256 0.16.2",
  "serde",
  "serde_json",
  "tokio",
+ "umbra_qos_attestation",
+ "umbra_qos_core",
+ "umbra_qos_hex",
+ "umbra_qos_hybrid",
+ "umbra_qos_json",
+ "umbra_qos_nsm",
  "ureq",
 ]
 
@@ -3106,27 +2837,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
-name = "tls_codec"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0de2e01245e2bb89d6f05801c564fa27624dbd7b1846859876c7dad82e90bf6b"
-dependencies = [
- "tls_codec_derive",
- "zeroize",
-]
-
-[[package]]
-name = "tls_codec_derive"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d2e76690929402faae40aebdda620a2c0e25dd6d3b9afe48867dfd95991f4bd"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "tokio"
 version = "1.47.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3247,6 +2957,180 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "umbra_qos_attestation"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-cose",
+ "aws-nitro-enclaves-nsm-api",
+ "p384",
+ "serde_bytes",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "umbra_qos_core",
+ "umbra_qos_crypto",
+ "umbra_qos_hybrid",
+ "umbra_qos_nsm",
+ "x509-cert",
+]
+
+[[package]]
+name = "umbra_qos_client"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-nsm-api",
+ "borsh",
+ "hkdf",
+ "lazy_static",
+ "rand_core 0.9.3",
+ "serde_json",
+ "sha2",
+ "umbra_qos_core",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_hybrid",
+ "umbra_qos_json",
+ "umbra_qos_nsm",
+ "umbra_qos_test_primitives",
+ "ureq",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_core"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-nsm-api",
+ "borsh",
+ "etherparse",
+ "futures",
+ "libc",
+ "nix 0.30.1",
+ "rustls",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tokio-vsock",
+ "umbra_qos_crypto",
+ "umbra_qos_hex",
+ "umbra_qos_hybrid",
+ "umbra_qos_json",
+ "umbra_qos_nsm",
+ "umbra_qos_test_primitives",
+ "webpki-roots 1.0.10",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_crypto"
+version = "0.16.2"
+dependencies = [
+ "rand 0.9.4",
+ "sha2",
+ "thiserror",
+ "umbra_qos_hex",
+ "vsss-rs",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_hex"
+version = "0.16.2"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "umbra_qos_hybrid"
+version = "0.16.2"
+dependencies = [
+ "aes-gcm",
+ "borsh",
+ "fips203",
+ "fips204",
+ "hkdf",
+ "rand_core 0.9.3",
+ "serde",
+ "sha2",
+ "umbra_qos_hex",
+ "umbra_qos_test_primitives",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_json"
+version = "0.16.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "umbra_qos_hex",
+]
+
+[[package]]
+name = "umbra_qos_net"
+version = "0.16.2"
+dependencies = [
+ "borsh",
+ "chunked_transfer",
+ "futures",
+ "hickory-resolver",
+ "httparse",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "umbra_qos_core",
+ "umbra_qos_test_primitives",
+ "webpki-roots 1.0.10",
+]
+
+[[package]]
+name = "umbra_qos_nsm"
+version = "0.16.2"
+dependencies = [
+ "aws-nitro-enclaves-cose",
+ "aws-nitro-enclaves-nsm-api",
+ "borsh",
+ "hex-literal",
+ "p384",
+ "serde",
+ "serde_bytes",
+ "sha2",
+ "umbra_qos_hex",
+ "umbra_qos_json",
+ "webpki",
+ "x509-cert",
+]
+
+[[package]]
+name = "umbra_qos_p256"
+version = "0.16.2"
+dependencies = [
+ "aes-gcm",
+ "borsh",
+ "hkdf",
+ "hmac",
+ "p256",
+ "serde",
+ "sha2",
+ "umbra_qos_hex",
+ "umbra_qos_test_primitives",
+ "zeroize",
+]
+
+[[package]]
+name = "umbra_qos_test_primitives"
+version = "0.16.2"
+dependencies = [
+ "nix 0.30.1",
+]
 
 [[package]]
 name = "unicode-ident"
@@ -3596,20 +3480,11 @@ dependencies = [
 
 [[package]]
 name = "windows-sys"
-version = "0.48.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "677d2418bec65e3338edb076e806bc1ec15693c5d0104683f2efe857f61056a9"
-dependencies = [
- "windows-targets 0.48.5",
-]
-
-[[package]]
-name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
 dependencies = [
- "windows-targets 0.52.6",
+ "windows-targets",
 ]
 
 [[package]]
@@ -3618,7 +3493,7 @@ version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
- "windows-targets 0.52.6",
+ "windows-targets",
 ]
 
 [[package]]
@@ -3632,40 +3507,19 @@ dependencies = [
 
 [[package]]
 name = "windows-targets"
-version = "0.48.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a2fa6e2155d7247be68c096456083145c183cbbbc2764150dda45a87197940c"
-dependencies = [
- "windows_aarch64_gnullvm 0.48.5",
- "windows_aarch64_msvc 0.48.5",
- "windows_i686_gnu 0.48.5",
- "windows_i686_msvc 0.48.5",
- "windows_x86_64_gnu 0.48.5",
- "windows_x86_64_gnullvm 0.48.5",
- "windows_x86_64_msvc 0.48.5",
-]
-
-[[package]]
-name = "windows-targets"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
 dependencies = [
- "windows_aarch64_gnullvm 0.52.6",
- "windows_aarch64_msvc 0.52.6",
- "windows_i686_gnu 0.52.6",
+ "windows_aarch64_gnullvm",
+ "windows_aarch64_msvc",
+ "windows_i686_gnu",
  "windows_i686_gnullvm",
- "windows_i686_msvc 0.52.6",
- "windows_x86_64_gnu 0.52.6",
- "windows_x86_64_gnullvm 0.52.6",
- "windows_x86_64_msvc 0.52.6",
+ "windows_i686_msvc",
+ "windows_x86_64_gnu",
+ "windows_x86_64_gnullvm",
+ "windows_x86_64_msvc",
 ]
-
-[[package]]
-name = "windows_aarch64_gnullvm"
-version = "0.48.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b38e32f0abccf9987a4e3079dfb67dcd799fb61361e53e2882c3cbaf0d905d8"
 
 [[package]]
 name = "windows_aarch64_gnullvm"
@@ -3675,21 +3529,9 @@ checksum = "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3"
 
 [[package]]
 name = "windows_aarch64_msvc"
-version = "0.48.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc35310971f3b2dbbf3f0690a219f40e2d9afcf64f9ab7cc1be722937c26b4bc"
-
-[[package]]
-name = "windows_aarch64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469"
-
-[[package]]
-name = "windows_i686_gnu"
-version = "0.48.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a75915e7def60c94dcef72200b9a8e58e5091744960da64ec734a6c6e9b3743e"
 
 [[package]]
 name = "windows_i686_gnu"
@@ -3705,21 +3547,9 @@ checksum = "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66"
 
 [[package]]
 name = "windows_i686_msvc"
-version = "0.48.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f55c233f70c4b27f66c523580f78f1004e8b5a8b659e05a4eb49d4166cca406"
-
-[[package]]
-name = "windows_i686_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
-
-[[package]]
-name = "windows_x86_64_gnu"
-version = "0.48.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53d40abd2583d23e4718fddf1ebec84dbff8381c07cae67ff7768bbf19c6718e"
 
 [[package]]
 name = "windows_x86_64_gnu"
@@ -3729,21 +3559,9 @@ checksum = "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78"
 
 [[package]]
 name = "windows_x86_64_gnullvm"
-version = "0.48.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b7b52767868a23d5bab768e390dc5f5c55825b6d30b86c844ff2dc7414044cc"
-
-[[package]]
-name = "windows_x86_64_gnullvm"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d"
-
-[[package]]
-name = "windows_x86_64_msvc"
-version = "0.48.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed94fce61571a4006852b7389a063ab983c02eb1bb37b47f8272ce92d06d9538"
 
 [[package]]
 name = "windows_x86_64_msvc"
@@ -3870,6 +3688,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "x25519-dalek"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
+dependencies = [
+ "curve25519-dalek",
+ "rand_core 0.6.4",
+ "zeroize",
+]
+
+[[package]]
 name = "x509-cert"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3877,10 +3706,7 @@ checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
 dependencies = [
  "const-oid",
  "der",
- "sha1",
- "signature",
  "spki",
- "tls_codec",
 ]
 
 [[package]]
@@ -3905,39 +3731,6 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
-]
-
-[[package]]
-name = "yubikey"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d1efb43c1e3edd4cf871c8dc500d900abfa083c1f2bab10b781ea8ffcadedcb"
-dependencies = [
- "base16ct",
- "der",
- "des",
- "ecdsa",
- "elliptic-curve",
- "hmac",
- "log",
- "nom",
- "num-bigint-dig",
- "num-integer",
- "num-traits",
- "p256",
- "p384",
- "pbkdf2",
- "pcsc",
- "rand_core 0.6.4",
- "rsa",
- "secrecy",
- "sha1",
- "sha2",
- "signature",
- "subtle",
- "uuid",
- "x509-cert",
- "zeroize",
 ]
 
 [[package]]

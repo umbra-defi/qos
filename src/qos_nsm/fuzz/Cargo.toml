@@ -11,9 +11,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 
-qos_hex = { path = "../../qos_hex" }
+qos_hex = { path = "../../qos_hex", package = "umbra_qos_hex" }
 # we need some of the mock code features
-qos_nsm = { path = "../", features = ["mock"] }
+qos_nsm = { path = "../", package = "umbra_qos_nsm", features = ["mock"] }
 
 [[bin]]
 name = "1_attestation_doc_from_der"
