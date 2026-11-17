@@ -17,5 +17,6 @@ X25519 key, an ML-DSA-87 key, an Ed25519 key and an AES-256-GCM secret.
   ([`HybridPublic::attestation_binding`]), since the 4224-byte public key does
   not fit in a Nitro attestation document's `public_key` field.
 
-Shamir sharding of the master seed is unchanged from `qos_p256`: shares are
-still shares of a 32-byte seed.
+Shamir sharding of the master seed is unchanged from upstream QuorumOS's
+P-256 key set: shares are still shares of a 32-byte seed. See
+[SPEC.md](SPEC.md) for the byte-level specification.

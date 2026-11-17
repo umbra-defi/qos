@@ -2216,16 +2216,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos_p256_fuzz"
-version = "0.0.0"
-dependencies = [
- "arbitrary",
- "libfuzzer-sys",
- "umbra_qos_p256",
- "zeroize",
-]
-
-[[package]]
 name = "qos_test_harness"
 version = "0.16.2"
 dependencies = [
@@ -3198,22 +3188,6 @@ dependencies = [
  "umbra_qos_json",
  "webpki",
  "x509-cert",
-]
-
-[[package]]
-name = "umbra_qos_p256"
-version = "0.16.2"
-dependencies = [
- "aes-gcm",
- "borsh",
- "hkdf",
- "hmac",
- "p256",
- "serde",
- "sha2",
- "umbra_qos_hex",
- "umbra_qos_test_primitives",
- "zeroize",
 ]
 
 [[package]]

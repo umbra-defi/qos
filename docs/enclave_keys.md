@@ -145,5 +145,5 @@ documentation.
   quorum key shares.
 - [Key Forward](key_forward.md) explains provisioning a new enclave from an
   already provisioned enclave in the same namespace.
-- [QOS Key Set Specification](../src/qos_p256/SPEC.md) describes the key
+- [QOS Hybrid Key Set Specification](../src/qos_hybrid/SPEC.md) describes the key
   schemes used by QOS keys.
