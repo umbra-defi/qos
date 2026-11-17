@@ -107,6 +107,7 @@ out/qos_enclave/index.json: \
 		src/init \
 		src/qos_enclave \
 		src/qos_core \
+		src/qos_hybrid \
 		src/qos_bridge \
 		src/qos_aws \
 		src/qos_system \
@@ -122,6 +123,7 @@ out/qos_enclave_egress/index.json: \
 		src/init \
 		src/qos_enclave \
 		src/qos_core \
+		src/qos_hybrid \
 		src/qos_aws \
 		src/qos_system \
 	)
@@ -134,6 +136,7 @@ out/qos_host/index.json: \
 	$(shell git ls-files \
 		src/qos_host \
 		src/qos_core \
+		src/qos_hybrid \
 	)
 	$(call build,qos_host)
 
@@ -144,6 +147,7 @@ out/qos_host_qemu/index.json: \
 	$(shell git ls-files \
 		src/qos_host \
 		src/qos_core \
+		src/qos_hybrid \
 	)
 	$(call build,qos_host_qemu)
 
@@ -153,7 +157,7 @@ out/qos_client/index.json: \
 	src/images/qos_client/Containerfile \
 	$(shell git ls-files \
 		src/qos_client \
-		src/qos_p256 \
+		src/qos_hybrid \
 		src/qos_nsm \
 		src/qos_hex \
 		src/qos_crypto \
@@ -169,6 +173,7 @@ out/qos_bridge/index.json: \
 		src/qos_bridge \
 		src/qos_host \
 		src/qos_core \
+		src/qos_hybrid \
 		src/qos_hex \
 		src/qos_nsm \
 	)
@@ -182,6 +187,7 @@ out/qos_bridge_qemu/index.json: \
 		src/qos_bridge \
 		src/qos_host \
 		src/qos_core \
+		src/qos_hybrid \
 		src/qos_hex \
 		src/qos_nsm \
 	)
@@ -195,6 +201,7 @@ out/qos_bridge_egress/index.json: \
 		src/qos_bridge \
 		src/qos_host \
 		src/qos_core \
+		src/qos_hybrid \
 		src/qos_hex \
 		src/qos_nsm \
 	)
@@ -211,7 +218,7 @@ out/signed_echo/index.json: \
 		src/qos_hex \
 		src/qos_json \
 		src/qos_nsm \
-		src/qos_p256 \
+		src/qos_hybrid \
 	)
 	$(call build,signed_echo)
 
