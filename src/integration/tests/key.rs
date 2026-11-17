@@ -46,6 +46,7 @@ async fn key_fwd_e2e() {
 
 	// start up new enclave
 	let new_secret_path = "/tmp/key-fwd-e2e/new_secret.secret";
+	let new_app_key_path = "/tmp/key-fwd-e2e/new_app_key.secret";
 	let new_pivot_path = "/tmp/key-fwd-e2e/new_pivot.pivot";
 	let new_manifest_path = "/tmp/key-fwd-e2e/new_manifest.manifest";
 	let new_usock = "/tmp/key-fwd-e2e/new_usock.sock";
@@ -58,6 +59,8 @@ async fn key_fwd_e2e() {
 				new_usock,
 				"--quorum-file",
 				new_secret_path,
+				"--app-key-file",
+				new_app_key_path,
 				"--pivot-file",
 				new_pivot_path,
 				"--ephemeral-file",
@@ -159,6 +162,17 @@ async fn key_fwd_e2e() {
 	let quorum_pair = HybridPair::from_hex_file(new_secret_path).unwrap();
 	let quorum_pub = HybridPublic::from_hex_file(QUORUM_KEY_PUB_PATH).unwrap();
 	assert!(quorum_pair.public_key() == quorum_pub);
+
+	// The share-provisioned old enclave minted the app key, and the new
+	// enclave, booting the same manifest, received that same key.
+	let old_app_key =
+		HybridPair::from_hex_file("/tmp/key-fwd-e2e/old_app_key.secret")
+			.unwrap();
+	let new_app_key = HybridPair::from_hex_file(new_app_key_path).unwrap();
+	assert!(
+		old_app_key.public_key() == new_app_key.public_key(),
+		"every enclave of one manifest must hold the same app key"
+	);
 }
 
 /// Write a `--mock-pcrs` seed file with the same PCR{0, 1, 2, 3} values the
@@ -272,6 +286,7 @@ fn boot_old_enclave(
 	mock_pcrs_path: &str,
 ) -> (ChildWrapper, ChildWrapper) {
 	let old_secret_path = "/tmp/key-fwd-e2e/old_secret.secret";
+	let old_app_key_path = "/tmp/key-fwd-e2e/old_app_key.secret";
 	let old_pivot_path = "/tmp/key-fwd-e2e/old_pivot.pivot";
 	let old_manifest_path = "/tmp/key-fwd-e2e/old_manifest.manifest";
 	let old_usock = "/tmp/key-fwd-e2e/old_usock.sock";
@@ -284,6 +299,8 @@ fn boot_old_enclave(
 				old_usock,
 				"--quorum-file",
 				old_secret_path,
+				"--app-key-file",
+				old_app_key_path,
 				"--pivot-file",
 				old_pivot_path,
 				"--ephemeral-file",

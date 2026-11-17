@@ -25,6 +25,7 @@ async fn genesis_e2e() {
 
 	let usock = tmp_dir.join("genesis_e2e.sock");
 	let secret_path = tmp_dir.join("genesis_e2e.secret");
+	let app_key_path = tmp_dir.join("genesis_e2e.app.secret");
 	let pivot_path = tmp_dir.join("genesis_e2e.pivot");
 	let manifest_path = tmp_dir.join("manifest.manifest");
 
@@ -107,6 +108,8 @@ async fn genesis_e2e() {
 				usock.to_str().unwrap(),
 				"--quorum-file",
 				secret_path.to_str().unwrap(),
+				"--app-key-file",
+				app_key_path.to_str().unwrap(),
 				"--pivot-file",
 				pivot_path.to_str().unwrap(),
 				"--mock",

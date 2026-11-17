@@ -37,6 +37,7 @@ async fn standard_boot_e2e() {
 
 	let usock = PathWrapper::from(tmp.join("boot_e2e.sock"));
 	let secret_path = PathWrapper::from(tmp.join("boot_e2e.secret"));
+	let app_key_path = PathWrapper::from(tmp.join("boot_e2e.app.secret"));
 	let pivot_path = PathWrapper::from(tmp.join("boot_e2e.pivot"));
 	let manifest_path = PathWrapper::from(tmp.join("boot_e2e.manifest"));
 	let eph_path = PathWrapper::from(tmp.join("ephemeral_key.secret"));
@@ -283,6 +284,8 @@ async fn standard_boot_e2e() {
 				usock.to_str().unwrap(),
 				"--quorum-file",
 				secret_path.to_str().unwrap(),
+				"--app-key-file",
+				app_key_path.to_str().unwrap(),
 				"--pivot-file",
 				pivot_path.to_str().unwrap(),
 				"--ephemeral-file",

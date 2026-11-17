@@ -17,6 +17,7 @@ local-enclave:
 		--usock ./dev.sock \
 		--mock \
 		--quorum-file ./local-enclave/qos.quorum.key \
+		--app-key-file ./local-enclave/qos.app.key \
 		--pivot-file ./local-enclave/qos.pivot.bin \
 		--ephemeral-file ./local-enclave/qos.ephemeral.key \
 		--manifest-file ./local-enclave/qos.manifest

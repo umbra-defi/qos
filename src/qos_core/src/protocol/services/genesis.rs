@@ -254,6 +254,7 @@ mod test {
 		let handles = Handles::new(
 			"EPH".to_string(),
 			"QUO".to_string(),
+			"QUO.app".to_string(),
 			"MAN".to_string(),
 			"PIV".to_string(),
 		);
@@ -339,6 +340,7 @@ mod test {
 		let handles = Handles::new(
 			"EPH2".to_string(),
 			"QUO2".to_string(),
+			"QUO2.app".to_string(),
 			"MAN2".to_string(),
 			"PIV2".to_string(),
 		);
@@ -371,6 +373,7 @@ mod test {
 		let handles = Handles::new(
 			"EPH".to_string(),
 			"QUO".to_string(),
+			"QUO.app".to_string(),
 			"MAN".to_string(),
 			"PIV".to_string(),
 		);

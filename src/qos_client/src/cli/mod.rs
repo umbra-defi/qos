@@ -14,7 +14,10 @@ use qos_core::{
 	parser::{CommandParser, GetParserForCommand, Parser, Token},
 	protocol::{
 		msg::ProtocolMsg,
-		services::boot::{self, BridgeConfig},
+		services::{
+			boot::{self, BridgeConfig},
+			key::AppKeyMode,
+		},
 	},
 };
 
@@ -32,6 +35,7 @@ const RESTART_POLICY: &str = "restart-policy";
 const PIVOT_PATH: &str = "pivot-path";
 const PIVOT_ARGS: &str = "pivot-args";
 const UNSAFE_SKIP_ATTESTATION: &str = "unsafe-skip-attestation";
+const MINT_APP_KEY: &str = "mint-app-key";
 const UNSAFE_EPH_PATH_OVERRIDE: &str = "unsafe-eph-path-override";
 const ENDPOINT_BASE_PATH: &str = "endpoint-base-path";
 const QOS_REALEASE_DIR: &str = "qos-release-dir";
@@ -296,6 +300,13 @@ impl Command {
 		Token::new(
 			UNSAFE_SKIP_ATTESTATION,
 			"NEVER USE IN PRODUCTION! Skip all attestation document checks, including basic cert chain validation."
+		)
+		.takes_value(false)
+	}
+	fn mint_app_key_token() -> Token {
+		Token::new(
+			MINT_APP_KEY,
+			"Mint the app key if the source enclave runs another manifest. Give it to one boot per manifest; every other boot receives the key from an enclave of its own manifest."
 		)
 		.takes_value(false)
 	}
@@ -830,6 +841,7 @@ impl Command {
 			.token(Self::manifest_envelope_path_token())
 			.token(Self::pivot_path_token())
 			.token(Self::attestation_doc_path_token())
+			.token(Self::mint_app_key_token())
 	}
 
 	fn export_key() -> Parser {
@@ -1280,6 +1292,14 @@ impl ClientOpts {
 
 	fn yubikey(&self) -> bool {
 		self.parsed.flag(YUBIKEY).unwrap_or(false)
+	}
+
+	fn app_key_mode(&self) -> AppKeyMode {
+		if self.parsed.flag(MINT_APP_KEY).unwrap_or(false) {
+			AppKeyMode::Mint
+		} else {
+			AppKeyMode::Receive
+		}
 	}
 
 	fn unsafe_skip_attestation(&self) -> bool {
@@ -1772,6 +1792,7 @@ mod handlers {
 			opts.manifest_envelope_path(),
 			opts.pivot_path(),
 			opts.attestation_doc_path(),
+			opts.app_key_mode(),
 		) {
 			println!("Error: {e:?}");
 			std::process::exit(1);

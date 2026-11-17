@@ -67,6 +67,7 @@ async fn enclave_app_client_socket_stress() {
 	let handles = Handles::new(
 		"secret_path_never".to_string(),
 		quorum_key_path.to_string(),
+		format!("{}.app", quorum_key_path),
 		manifest_path.to_string(),
 		PIVOT_SOCKET_STRESS_PATH.to_string(),
 	);

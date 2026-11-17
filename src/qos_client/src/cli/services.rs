@@ -22,7 +22,7 @@ use qos_core::protocol::{
 			VersionedManifestEnvelope,
 		},
 		genesis::{GenesisOutput, GenesisSet},
-		key::EncryptedQuorumKey,
+		key::{AppKeyMode, EncryptedQuorumKey},
 	},
 };
 use qos_crypto::{sha_256, sha_384, sha_512};
@@ -1180,6 +1180,7 @@ pub(crate) fn boot_key_fwd<P: AsRef<Path>>(
 	manifest_envelope_path: P,
 	pivot_path: P,
 	attestation_doc_path: P,
+	app_key_mode: AppKeyMode,
 ) -> Result<(), Error> {
 	let pivot =
 		fs::read(pivot_path.as_ref()).map_err(Error::FailedToReadPivot)?;
@@ -1190,6 +1191,7 @@ pub(crate) fn boot_key_fwd<P: AsRef<Path>>(
 	let req = ProtocolMsg::BootKeyForwardRequest {
 		manifest_envelope: Box::new(manifest_envelope),
 		pivot,
+		app_key_mode,
 	};
 	let (cose_sign1, ephemeral_public_key) =
 		post_request_with_encoding_fallback(uri, &req, encodings, |resp| {
@@ -1239,7 +1241,14 @@ pub(crate) fn export_key<P: AsRef<Path>>(
 				ProtocolMsg::ExportKeyResponse {
 					encrypted_quorum_key,
 					signature,
-				} => Ok(EncryptedQuorumKey { encrypted_quorum_key, signature }),
+					encrypted_app_key,
+					app_key_attestation_doc,
+				} => Ok(EncryptedQuorumKey {
+					encrypted_quorum_key,
+					signature,
+					encrypted_app_key,
+					app_key_attestation_doc,
+				}),
 				r => Err(format!("{r:?}")),
 			}
 		})
@@ -1315,6 +1324,8 @@ pub(crate) fn inject_key<P: AsRef<Path>>(
 	let req = ProtocolMsg::InjectKeyRequest {
 		encrypted_quorum_key: encrypted_quorum_key.encrypted_quorum_key,
 		signature: encrypted_quorum_key.signature,
+		encrypted_app_key: encrypted_quorum_key.encrypted_app_key,
+		app_key_attestation_doc: encrypted_quorum_key.app_key_attestation_doc,
 	};
 
 	match request::post(uri, &req).unwrap() {

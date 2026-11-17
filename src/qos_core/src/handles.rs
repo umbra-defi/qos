@@ -37,6 +37,35 @@ impl QuorumKeyHandle {
 	}
 }
 
+/// Handle for accessing the app key.
+///
+/// The app key is shared by every enclave that boots one manifest. It is
+/// minted inside an enclave and only ever leaves one sealed to another
+/// attested enclave of the same manifest, so unlike the quorum key it cannot be
+/// rebuilt from shares or a disaster-recovery key.
+#[derive(Debug, Clone)]
+pub struct AppKeyHandle {
+	app_key: String,
+}
+
+impl AppKeyHandle {
+	/// Create a new instance of [`Self`].
+	#[must_use]
+	pub fn new(app_key: String) -> Self {
+		Self { app_key }
+	}
+
+	/// Get the app key pair.
+	///
+	/// # Errors
+	///
+	/// Errors if the app key has not been put.
+	pub fn get_app_key(&self) -> Result<HybridPair, ProtocolError> {
+		HybridPair::from_hex_file(&self.app_key)
+			.map_err(ProtocolError::FailedToGetAppKey)
+	}
+}
+
 /// Handle for accessing the enclave ephemeral key.
 #[derive(Debug, Clone, Copy)]
 pub struct EphemeralKeyHandle<S = String> {
@@ -75,6 +104,8 @@ pub struct Handles {
 	ephemeral: EphemeralKeyHandle,
 	/// Path to the file containing the PEM encoded Quorum Key.
 	quorum: QuorumKeyHandle,
+	/// Path to the file containing the hex encoded app key master seed.
+	app_key: AppKeyHandle,
 	/// Path to the file containing the Borsh encoded [`ManifestEnvelope`].
 	manifest: String,
 	/// Path to the file containing the pivot.
@@ -87,12 +118,14 @@ impl Handles {
 	pub fn new(
 		ephemeral: String,
 		quorum: String,
+		app_key: String,
 		manifest: String,
 		pivot: String,
 	) -> Self {
 		Self {
 			ephemeral: EphemeralKeyHandle::new(ephemeral),
 			quorum: QuorumKeyHandle::new(quorum),
+			app_key: AppKeyHandle::new(app_key),
 			manifest,
 			pivot,
 		}
@@ -178,6 +211,29 @@ impl Handles {
 	#[must_use]
 	pub fn quorum_key_exists(&self) -> bool {
 		Path::new(&self.quorum.quorum).exists()
+	}
+
+	/// Get the app key pair.
+	///
+	/// # Errors
+	///
+	/// Errors if the app key has not been put.
+	pub fn get_app_key(&self) -> Result<HybridPair, ProtocolError> {
+		self.app_key.get_app_key()
+	}
+
+	/// Put the app key pair. Must happen before the Quorum Key is put, since
+	/// the Quorum Key file is what starts the pivot.
+	///
+	/// # Errors
+	///
+	/// Errors if the app key has already been put.
+	pub fn put_app_key(&self, pair: &HybridPair) -> Result<(), ProtocolError> {
+		Self::write_as_read_only(
+			&self.app_key.app_key,
+			&pair.to_master_seed_hex(),
+			ProtocolError::FailedToPutAppKey,
+		)
 	}
 
 	/// Get the Manifest.
@@ -359,6 +415,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.display().to_string(),
 			quorum_file.display().to_string(),
+			format!("{}.app", quorum_file.display()),
 			manifest_file.display().to_string(),
 			pivot_file.display().to_string(),
 		);
@@ -386,6 +443,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.display().to_string(),
 			quorum_file.display().to_string(),
+			format!("{}.app", quorum_file.display()),
 			manifest_file.display().to_string(),
 			pivot_file.display().to_string(),
 		);
@@ -415,6 +473,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.display().to_string(),
 			quorum_file.display().to_string(),
+			format!("{}.app", quorum_file.display()),
 			manifest_file.display().to_string(),
 			pivot_file.display().to_string(),
 		);
@@ -442,6 +501,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.display().to_string(),
 			quorum_file.display().to_string(),
+			format!("{}.app", quorum_file.display()),
 			manifest_file.display().to_string(),
 			pivot_file.display().to_string(),
 		);

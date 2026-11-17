@@ -11,6 +11,7 @@ use crate::protocol::{
 	services::{
 		boot::{Approval, VersionedManifestEnvelope},
 		genesis::{GenesisOutput, GenesisSet},
+		key::AppKeyMode,
 	},
 };
 
@@ -197,6 +198,10 @@ pub enum ProtocolMsg {
 		/// Pivot binary
 		#[serde(with = "qos_hex::serde")]
 		pivot: Vec<u8>,
+		/// Whether this boot may mint the app key when the forwarded key
+		/// carries none.
+		#[serde(default)]
+		app_key_mode: AppKeyMode,
 	},
 	/// Response to a key forward attestation request
 	BootKeyForwardResponse {
@@ -232,6 +237,21 @@ pub enum ProtocolMsg {
 		/// Signature over the encrypted quorum key.
 		#[serde(with = "qos_hex::serde")]
 		signature: Vec<u8>,
+		/// App key encrypted to the same Ephemeral Key, present only when the
+		/// requesting enclave boots this enclave's manifest.
+		#[serde(
+			default,
+			skip_serializing_if = "Option::is_none",
+			with = "qos_hex::serde::option"
+		)]
+		encrypted_app_key: Option<Vec<u8>>,
+		/// This enclave's attestation document binding `encrypted_app_key`.
+		#[serde(
+			default,
+			skip_serializing_if = "Option::is_none",
+			with = "qos_hex::serde::option"
+		)]
+		app_key_attestation_doc: Option<Vec<u8>>,
 	},
 
 	/// Inject a key into an enclave
@@ -243,6 +263,21 @@ pub enum ProtocolMsg {
 		/// Signature over the encrypted quorum key.
 		#[serde(with = "qos_hex::serde")]
 		signature: Vec<u8>,
+		/// App key encrypted to the Ephemeral Key of the enclave this request
+		/// is being sent to, when the sender runs the same manifest.
+		#[serde(
+			default,
+			skip_serializing_if = "Option::is_none",
+			with = "qos_hex::serde::option"
+		)]
+		encrypted_app_key: Option<Vec<u8>>,
+		/// The sender's attestation document binding `encrypted_app_key`.
+		#[serde(
+			default,
+			skip_serializing_if = "Option::is_none",
+			with = "qos_hex::serde::option"
+		)]
+		app_key_attestation_doc: Option<Vec<u8>>,
 	},
 	/// Successful response to [`Self::InjectKeyRequest`].
 	InjectKeyResponse,

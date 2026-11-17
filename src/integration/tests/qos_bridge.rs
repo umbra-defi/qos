@@ -80,6 +80,8 @@ async fn qos_bridge_works() {
 	let usock = PathWrapper::from(usock_path.clone());
 	let secret_path =
 		PathWrapper::from("/tmp/qos_host_bridge/qos_host_bridge.secret");
+	let app_key_path =
+		PathWrapper::from("/tmp/qos_host_bridge/qos_host_bridge.app.secret");
 	let pivot_path =
 		PathWrapper::from("/tmp/qos_host_bridge/qos_host_bridge.pivot");
 	let manifest_path =
@@ -342,6 +344,8 @@ async fn qos_bridge_works() {
 				usock.to_str().unwrap(),
 				"--quorum-file",
 				secret_path.to_str().unwrap(),
+				"--app-key-file",
+				app_key_path.to_str().unwrap(),
 				"--pivot-file",
 				pivot_path.to_str().unwrap(),
 				"--ephemeral-file",

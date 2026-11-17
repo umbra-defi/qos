@@ -203,6 +203,21 @@ pub enum ProtocolError {
 	/// The ephemeral key does not match the attestation binding in the
 	/// attestation document's `public_key` field.
 	EphemeralKeyNotAttested,
+	/// Failed to read the app key.
+	FailedToGetAppKey(HybridError),
+	/// Failed to write the app key.
+	FailedToPutAppKey,
+	/// The forwarded key carried no app key, and this boot was told to
+	/// receive one rather than mint it.
+	AppKeyNotForwarded,
+	/// The forwarded key carried an encrypted app key without the sending
+	/// enclave's attestation, or the reverse.
+	AppKeyTransferIncomplete,
+	/// The sending enclave's attestation does not prove it runs this
+	/// enclave's manifest and sealed this exact app key to this enclave.
+	AppKeyTransferNotAttested(String),
+	/// The decrypted app key is not a master seed.
+	InvalidAppKeySecret,
 }
 
 impl From<std::io::Error> for ProtocolError {
@@ -414,6 +429,24 @@ impl std::fmt::Display for ProtocolError {
 			}
 			Self::EphemeralKeyNotAttested => {
 				write!(f, "ephemeral key does not match the attested binding")
+			}
+			Self::FailedToGetAppKey(e) => {
+				write!(f, "failed to get the app key: {e:?}")
+			}
+			Self::FailedToPutAppKey => write!(f, "failed to put the app key"),
+			Self::AppKeyNotForwarded => write!(
+				f,
+				"no app key was forwarded and this boot may not mint one"
+			),
+			Self::AppKeyTransferIncomplete => write!(
+				f,
+				"an app key transfer needs both the encrypted key and the sender's attestation"
+			),
+			Self::AppKeyTransferNotAttested(e) => {
+				write!(f, "app key sender is not attested: {e}")
+			}
+			Self::InvalidAppKeySecret => {
+				write!(f, "decrypted app key is not a master seed")
 			}
 		}
 	}

@@ -1096,6 +1096,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.clone(),
 			"quorum_key".to_string(),
+			"quorum_key.app".to_string(),
 			manifest_file.clone(),
 			pivot_file.clone(),
 		);
@@ -1155,6 +1156,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.display().to_string(),
 			quorum_file.display().to_string(),
+			format!("{}.app", quorum_file.display()),
 			manifest_file.display().to_string(),
 			pivot_file.display().to_string(),
 		);
@@ -1204,6 +1206,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.clone(),
 			"quorum_key".to_string(),
+			"quorum_key.app".to_string(),
 			manifest_file,
 			pivot_file,
 		);
@@ -1248,6 +1251,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.clone(),
 			"quorum_key".to_string(),
+			"quorum_key.app".to_string(),
 			manifest_file,
 			pivot_file,
 		);
@@ -1297,6 +1301,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.display().to_string(),
 			"quorum_key".to_string(),
+			"quorum_key.app".to_string(),
 			manifest_file.display().to_string(),
 			pivot_file.display().to_string(),
 		);
@@ -1355,6 +1360,7 @@ mod test {
 		let handles = Handles::new(
 			ephemeral_file.display().to_string(),
 			"quorum_key".to_string(),
+			"quorum_key.app".to_string(),
 			manifest_file.display().to_string(),
 			pivot_file.display().to_string(),
 		);
