@@ -486,6 +486,12 @@ async fn standard_boot_e2e() {
 	let enclave_info: EnclaveInfo =
 		ureq::get(&enclave_info_url).call().unwrap().into_json().unwrap();
 	assert_eq!(enclave_info.phase, ProtocolPhase::QuorumKeyProvisioned);
+	let live_ephemeral_key = HybridPair::from_hex_file(&*eph_path).unwrap();
+	assert_eq!(
+		enclave_info.ephemeral_key,
+		Some(qos_hex::encode(&live_ephemeral_key.public_key().to_bytes())),
+		"enclave-info reports the full live ephemeral key, not its 64-byte attestation binding"
+	);
 
 	// Give the enclave time to start the pivot
 	tokio::time::sleep(std::time::Duration::from_secs(2)).await;

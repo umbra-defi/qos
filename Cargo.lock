@@ -2094,6 +2094,7 @@ dependencies = [
  "tokio",
  "umbra_qos_core",
  "umbra_qos_hex",
+ "umbra_qos_hybrid",
  "umbra_qos_nsm",
 ]
 
