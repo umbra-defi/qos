@@ -67,8 +67,11 @@ the same standard as the device, but not on the same machine. Never store the
 passphrase beside either.
 
 Every command prompts for the passphrase without echo. A script can pass
-`--yubikey-passphrase-path <file>` instead; keep that file off the machine's
-disk when it is not in use.
+`--yubikey-passphrase-path <file>` instead. The file must sit on a RAM-backed
+volume: a release build of `qos_client` refuses any other, and names how to make
+one (an HFS+ `ram://` disk on macOS, a tmpfs or ramfs on Linux). The same rule
+covers every plaintext key `qos_client` writes: master seeds, Shamir shares,
+reconstructed secrets and decrypted plaintexts.
 
 ## 3: Use the key
 

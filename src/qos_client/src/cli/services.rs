@@ -227,6 +227,8 @@ fn read_passphrase(
 	confirm: bool,
 ) -> Result<zeroize::Zeroizing<String>, Error> {
 	if let Some(path) = path {
+		crate::ram_volume::admit_file(Path::new(path))
+			.map_err(Error::FailedToReadPassphrase)?;
 		let text =
 			zeroize::Zeroizing::new(fs::read_to_string(path).map_err(|e| {
 				Error::FailedToReadPassphrase(format!("{path}: {e}"))
@@ -2637,6 +2639,9 @@ fn write_secret_with_msg(path: &Path, buf: &[u8], item_name: &str) {
 	use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
 	let path_str = path.as_os_str().to_string_lossy();
+	if let Err(refusal) = crate::ram_volume::admit_file(path) {
+		panic!("Refusing to write {item_name} to {path_str}: {refusal}");
+	}
 	fs::OpenOptions::new()
 		.write(true)
 		.create(true)
