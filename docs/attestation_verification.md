@@ -35,16 +35,12 @@ provisioning document, or **live** for a post-provision app document.
    `manifest.enclave.pcr0..pcr3` byte-for-byte. Require every PCR index 0 through
    31 to be present.
 
-7. **Validate the ephemeral key binding.** The hybrid ephemeral key (4224
-   bytes, see [`qos_hybrid`'s spec](../src/qos_hybrid/SPEC.md)) does not fit in
-   the document, so `public_key` holds its 64-byte binding,
-   `SHA-512("qos_hybrid_attestation_binding_v1" || ephemeral_public_key)`.
-   Require `public_key` to be exactly 64 bytes, and, given the full ephemeral
-   key from the enclave's response, require its binding to equal `public_key`
-   before encrypting to it. Use the 64-byte binding in the next step.
+7. **Validate the ephemeral key.** Require `public_key` to encode
+   `encrypt_public || sign_public`: two uncompressed SEC1 P-256 points (65 bytes
+   each, 130 bytes total). Use this exact 130-byte value in the next step.
 
 8. **Verify the manifest commitment PCR.** Reconstruct the expected commitment
-   from `manifest_hash` and the binding as defined below. Verify it equals PCR16
+   from `manifest_hash` and `public_key` as defined below. Verify it equals PCR16
    for setup documents or PCR17 for live documents.
 
 9. **Verify the manifest-only commitment.** Reconstruct PCR18 from
@@ -59,12 +55,12 @@ provisioning document, or **live** for a post-provision app document.
 | Manifest hash | SHA-256, 32 bytes |
 | PCR digest and length | SHA-384, 48 bytes |
 | Attestable PCR indexes | 0 through 31 |
-| Setup commitment | PCR16, domain `qos-setup-manifest-pcr-commitment-v2` |
-| Live commitment | PCR17, domain `qos-live-manifest-pcr-commitment-v2` |
+| Setup commitment | PCR16, domain `qos-setup-manifest-pcr-commitment-v1` |
+| Live commitment | PCR17, domain `qos-live-manifest-pcr-commitment-v1` |
 | Manifest-only commitment | PCR18, domain `qos-manifest-pcr-commitment-v1` |
 | Commitment PCR initial value | 48 zero bytes |
 | Commitment hex | Lowercase, no `0x` prefix |
-| Ephemeral key binding | SHA-512 of the hybrid ephemeral key, 64 bytes |
+| Ephemeral public key | `encrypt_public || sign_public`, 65 + 65 bytes |
 | Root-G1 SHA-256 fingerprint | `641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b` (DER certificate) |
 
 Download Root-G1 from
@@ -96,7 +92,7 @@ Encode this UTF-8 canonical JSON with exactly the shown fields and no
 whitespace:
 
 ```json
-{"domain":"<domain>","ephemeralKeyBinding":"<lowercase hex>","manifestHash":"<lowercase hex>"}
+{"domain":"<domain>","ephemeralPublicKey":"<lowercase hex>","manifestHash":"<lowercase hex>"}
 ```
 
 Then compute:
@@ -106,14 +102,13 @@ commitment  = SHA384(preimage)
 expectedPcr = SHA384((0x00 * 48) || commitment)
 ```
 
-Compare `expectedPcr` with PCR16 (setup) or PCR17 (live). Version 2 of the
-setup and live domains carries the 64-byte binding; a verifier still computing
-v1 over a raw key gets a mismatch rather than a wrong meaning. The reference
-implementation is `expected_manifest_commitment_pcr` in
-[`src/qos_nsm/src/nitro/mod.rs`](../src/qos_nsm/src/nitro/mod.rs); its
-encoding and output vectors are the tests
-`manifest_pcr_commitment_preimage_uses_qos_json` and
-`manifest_commitment_pcr_test_vectors` in the same file.
+Compare `expectedPcr` with PCR16 (setup) or PCR17 (live). The reference
+implementation is
+[`expected_manifest_commitment_pcr`](https://github.com/tkhq/qos/blob/1cf9b652a4616fc081948328e2b9ad57675c1395/src/qos_nsm/src/nitro/mod.rs#L178-L186);
+its encoding and output vectors are in
+[`manifest_pcr_commitment_preimage_uses_qos_json`](https://github.com/tkhq/qos/blob/1cf9b652a4616fc081948328e2b9ad57675c1395/src/qos_nsm/src/nitro/mod.rs#L691-L702)
+and
+[`manifest_commitment_pcr_test_vectors`](https://github.com/tkhq/qos/blob/1cf9b652a4616fc081948328e2b9ad57675c1395/src/qos_nsm/src/nitro/mod.rs#L716-L764).
 
 ### Manifest-only commitment PCR
 
@@ -131,8 +126,7 @@ PCR18 applies the same two hashes to this canonical JSON:
 - Hash the schema-specific canonical manifest, not received JSON bytes or the
   manifest envelope.
 - Do not confuse the 32-byte SHA-256 manifest hash with 48-byte SHA-384 PCRs.
-- Hash the 64-byte binding of the entire ephemeral key, never the key itself or
-  one of its halves.
+- Hash the entire 130-byte public key, not only its encryption or signing half.
 - Preserve the two commitment hash layers:
   `SHA384(zeros48 || SHA384(preimage))`.
 - Do not mix setup PCR16/domain with live PCR17/domain.
