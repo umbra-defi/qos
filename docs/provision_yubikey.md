@@ -3,15 +3,28 @@
 This playbook covers provisioning a YubiKey as a manifest set or share set member.
 
 A member key is a post-quantum hybrid key (ML-KEM-1024 + X25519 for encryption,
-ML-DSA-87 for signing). YubiKey PIV slots cannot hold these keys, so the key is
-derived instead of stored: its 32-byte master seed is
-`HKDF-SHA512(salt, response, "qos_hybrid_yubikey_otp_member_seed_v1")`, where
-`response` is the YubiKey's HMAC-SHA1 answer, from OTP slot 2, to the challenge
-`salt`. The salt is public and lives in a file beside the member's public key.
-The slot secret never leaves the device.
+ML-DSA-87 + Ed25519 for signing). YubiKey PIV slots cannot hold these keys, so
+the key is derived instead of stored: its 32-byte master seed is
 
-To derive the key you need both the YubiKey and the salt file. Losing either one
-loses the key.
+```text
+HKDF-SHA512(salt, response || Argon2id(passphrase, salt),
+            "qos_hybrid_yubikey_otp_passphrase_member_seed_v1")
+```
+
+where `response` is the YubiKey's 20-byte HMAC-SHA1 answer, from OTP slot 2, to
+the challenge `salt`, and Argon2id runs at 64 MiB, 3 passes, 1 lane. The salt is
+public and lives in a file beside the member's public key. The slot secret never
+leaves the device.
+
+To derive the key you need the YubiKey, the salt file and the passphrase. Losing
+any one of them loses the key.
+
+**Why the passphrase.** A YubiKey answers a given salt the same way forever. With
+no passphrase, one captured answer, from a compromised laptop or a few seconds
+with the device and the salt file, would rebuild the member key for good, with
+no PIN to stop it. The passphrase is what that capture still lacks: an attacker
+holding an answer must still guess the passphrase, paying Argon2id's cost for
+each guess. Choose one of at least 12 characters that is used nowhere else.
 
 ## 1: Program OTP slot 2
 
@@ -29,9 +42,10 @@ that would write to or reset the device.
 
 ## 2: Provision the member key
 
-**What this does**: Writes a fresh salt, derives the member key from the
-YubiKey, and writes its public key. Before writing anything, it checks that the
-device answers the challenge, and answers it the same way twice.
+**What this does**: Asks for the passphrase twice, writes a fresh salt, derives
+the member key from the YubiKey and the passphrase, and writes its public key.
+Before writing anything, it checks that the device answers the challenge, and
+answers it the same way twice.
 
 ```bash
 qos_client provision-yubikey \
@@ -49,7 +63,12 @@ With more than one YubiKey attached, pin the device:
 ```
 
 Share the `.pub` file with the ceremony coordinator. Back up the `.salt` file to
-the same standard as the device, but not on the same machine.
+the same standard as the device, but not on the same machine. Never store the
+passphrase beside either.
+
+Every command prompts for the passphrase without echo. A script can pass
+`--yubikey-passphrase-path <file>` instead; keep that file off the machine's
+disk when it is not in use.
 
 ## 3: Use the key
 
@@ -63,8 +82,11 @@ qos_client yubikey-public --yubikey-salt-path ~/path/to/alias.salt
 
 ## Strength of a YubiKey member key
 
-The member key is only as strong as slot 2's 20-byte (160-bit) HMAC-SHA1 secret.
-A quantum attacker brute-forcing that secret against the public member key needs
-about 2^80 work, which is below the strength of ML-KEM-1024 and ML-DSA-87. A
-member that needs the full post-quantum margin should use a file-held key
-(`generate-file-key`, `--secret-path`) kept on offline storage.
+The member key is only as strong as slot 2's 20-byte (160-bit) HMAC-SHA1 secret
+together with the passphrase. A quantum attacker brute-forcing the slot secret
+against the public member key needs about 2^80 work times the cost of the
+passphrase search, which can be below the strength of ML-KEM-1024 and ML-DSA-87.
+Slot 2 is only as touch-protected as it was programmed: `qos_client` cannot
+check that `--touch` was used. A member that needs the full post-quantum margin
+should use a file-held key (`generate-file-key`, `--secret-path`) kept on
+offline storage.

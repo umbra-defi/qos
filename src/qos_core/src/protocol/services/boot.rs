@@ -311,15 +311,20 @@ pub(crate) fn ensure_unique_members(
 	members: &[QuorumMember],
 ) -> Result<(), ProtocolError> {
 	let mut aliases = HashSet::new();
-	let mut signing_keys = HashSet::new();
-	let mut encryption_keys = HashSet::new();
+	let mut components = HashSet::new();
 	for member in members {
 		let pub_key = HybridPublic::from_bytes(&member.pub_key)?;
-		if !aliases.insert(&member.alias)
-			|| !signing_keys.insert(pub_key.signing_public_key_bytes())
-			|| !encryption_keys.insert(pub_key.encryption_public_key_bytes())
-		{
+		if !aliases.insert(&member.alias) {
 			return Err(ProtocolError::DuplicateQuorumMember);
+		}
+		// Two members sharing any one component key, an X25519 half for
+		// instance, are not independent: whoever holds it acts for both.
+		for (index, component) in
+			pub_key.component_public_keys().into_iter().enumerate()
+		{
+			if !components.insert((index, component)) {
+				return Err(ProtocolError::DuplicateQuorumMember);
+			}
 		}
 	}
 	Ok(())
@@ -914,6 +919,18 @@ mod test {
 			.collect()
 	}
 
+	/// `base`'s public key with component `index` taken from `donor`.
+	fn with_component(
+		base: &HybridPair,
+		donor: &HybridPair,
+		index: usize,
+	) -> Vec<u8> {
+		let mut components = base.public_key().component_public_keys();
+		components[index] =
+			donor.public_key().component_public_keys()[index].clone();
+		components.concat()
+	}
+
 	fn stable_pivot_config_v0() -> PivotConfigV0 {
 		PivotConfigV0 {
 			hash: [2; 32],
@@ -1445,6 +1462,16 @@ mod test {
 			vec![
 				member("a", mixed_public_key(&pair_a, &pair_b)),
 				member("b", mixed_public_key(&pair_a, &pair_c)),
+			],
+			// Same X25519 half alone
+			vec![
+				member("a", pair_a.public_key().to_bytes()),
+				member("b", with_component(&pair_b, &pair_a, 1)),
+			],
+			// Same Ed25519 half alone
+			vec![
+				member("a", pair_a.public_key().to_bytes()),
+				member("b", with_component(&pair_b, &pair_a, 3)),
 			],
 		];
 		for members in duplicate_sets {

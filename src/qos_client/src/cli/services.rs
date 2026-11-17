@@ -64,6 +64,16 @@ type PivotConfig = PivotConfigV1;
 pub enum Error {
 	/// Error deriving a member key from a `YubiKey` OTP challenge-response.
 	Otp(crate::otp::OtpError),
+	/// `--yubikey` was given without `--yubikey-salt-path`.
+	YubiKeyNeedsSaltPath,
+	/// Neither `--yubikey` nor `--secret-path` was given.
+	NeedYubiKeyOrSecretPath,
+	/// Both `--yubikey` and `--secret-path` were given.
+	YubiKeyAndSecretPath,
+	/// The `YubiKey` member passphrase could not be read.
+	FailedToReadPassphrase(String),
+	/// The two passphrase entries for a new member key differ.
+	PassphraseMismatch,
 	/// Error from qos hybrid keys.
 	Hybrid(qos_hybrid::HybridError),
 	/// Failed to read share
@@ -195,6 +205,49 @@ impl From<qos_nsm::nitro::AttestError> for Error {
 	}
 }
 
+/// What derives a `YubiKey` member key besides the device: the salt file, the
+/// command that asks the device, and where the passphrase comes from.
+#[derive(Default)]
+pub struct YubiKeyInputs {
+	/// Path to the member's hex salt file.
+	pub salt_path: Option<String>,
+	/// Challenge command; defaults to
+	/// [`crate::otp::DEFAULT_CHALLENGE_COMMAND`].
+	pub challenge_command: Option<String>,
+	/// File holding the passphrase; without one, the passphrase is prompted
+	/// for on the terminal.
+	pub passphrase_path: Option<String>,
+}
+
+/// Read the `YubiKey` member passphrase from `path`, without its trailing
+/// newline, or prompt for it on the terminal without echo. `confirm` prompts
+/// twice and refuses two different entries, for a new member key.
+fn read_passphrase(
+	path: Option<&str>,
+	confirm: bool,
+) -> Result<zeroize::Zeroizing<String>, Error> {
+	if let Some(path) = path {
+		let text =
+			zeroize::Zeroizing::new(fs::read_to_string(path).map_err(|e| {
+				Error::FailedToReadPassphrase(format!("{path}: {e}"))
+			})?);
+		return Ok(zeroize::Zeroizing::new(
+			text.trim_end_matches(['\r', '\n']).to_owned(),
+		));
+	}
+
+	let prompt = |message: &str| {
+		rpassword::prompt_password(message)
+			.map(zeroize::Zeroizing::new)
+			.map_err(|e| Error::FailedToReadPassphrase(e.to_string()))
+	};
+	let passphrase = prompt("YubiKey member passphrase: ")?;
+	if confirm && *prompt("Repeat the passphrase: ")? != *passphrase {
+		return Err(Error::PassphraseMismatch);
+	}
+	Ok(passphrase)
+}
+
 /// A member key: from a master seed file, or derived from a `YubiKey` OTP
 /// challenge-response slot (see [`crate::otp`]).
 pub enum PairOrYubi {
@@ -219,30 +272,30 @@ impl PairOrYubi {
 	pub fn from_inputs(
 		yubikey_flag: bool,
 		secret_path: Option<String>,
-		yubikey_salt_path: Option<String>,
-		challenge_command: Option<String>,
+		yubikey: YubiKeyInputs,
 	) -> Result<Self, Error> {
 		let result = match (yubikey_flag, secret_path) {
 			(true, None) => {
 				let salt = crate::otp::read_salt(
-					yubikey_salt_path
-						.expect("`--yubikey` needs `--yubikey-salt-path`"),
+					yubikey.salt_path.ok_or(Error::YubiKeyNeedsSaltPath)?,
 				)?;
-				let command = challenge_command.unwrap_or_else(|| {
+				let command = yubikey.challenge_command.unwrap_or_else(|| {
 					crate::otp::DEFAULT_CHALLENGE_COMMAND.to_string()
 				});
+				let passphrase =
+					read_passphrase(yubikey.passphrase_path.as_deref(), false)?;
 				PairOrYubi::Yubi(crate::otp::derive_member_pair(
-					&command, &salt,
+					&command,
+					&salt,
+					passphrase.as_bytes(),
 				)?)
 			}
 			(false, Some(path)) => {
 				let pair = HybridPair::from_hex_file(path)?;
 				PairOrYubi::Pair(pair)
 			}
-			(false, None) => panic!("Need either yubikey flag or secret path"),
-			(true, Some(_)) => {
-				panic!("Cannot have both yubikey flag and secret path")
-			}
+			(false, None) => return Err(Error::NeedYubiKeyOrSecretPath),
+			(true, Some(_)) => return Err(Error::YubiKeyAndSecretPath),
 		};
 
 		Ok(result)
@@ -311,16 +364,22 @@ pub fn generate_file_key<P: AsRef<Path>>(
 }
 
 /// Mint a `YubiKey` member key: write a fresh salt to `salt_path`, derive the
-/// hybrid pair from the device's OTP challenge-response, and write its public
-/// key to `pub_path`. The device must answer the challenge and answer it the
-/// same way twice, or nothing is written.
+/// hybrid pair from the device's OTP challenge-response and the member's
+/// passphrase, and write its public key to `pub_path`. The device must answer
+/// the challenge and answer it the same way twice, or nothing is written.
 pub(crate) fn provision_yubikey<P: AsRef<Path>>(
 	pub_path: P,
 	salt_path: P,
 	challenge_command: &str,
+	passphrase_path: Option<&str>,
 ) -> Result<(), Error> {
+	let passphrase = read_passphrase(passphrase_path, true)?;
 	let salt = crate::otp::fresh_salt();
-	let pair = crate::otp::derive_member_pair_probed(challenge_command, &salt)?;
+	let pair = crate::otp::derive_member_pair_probed(
+		challenge_command,
+		&salt,
+		passphrase.as_bytes(),
+	)?;
 
 	crate::otp::write_new_salt(salt_path.as_ref(), &salt)?;
 	write_with_msg(
@@ -330,7 +389,8 @@ pub(crate) fn provision_yubikey<P: AsRef<Path>>(
 	);
 	println!(
 		"Back up {} next to the public key: without it this YubiKey cannot \
-		 derive the member key again. Never reprogram OTP slot 2.",
+		 derive the member key again. The passphrase is part of the key too: \
+		 forget it and the key is gone. Never reprogram OTP slot 2.",
 		salt_path.as_ref().display()
 	);
 
@@ -1737,17 +1797,11 @@ pub(crate) fn post_share<P: AsRef<Path>>(
 /// Sign a hex payload with the `YubiKey` member key and print the signature.
 pub(crate) fn yubikey_sign(
 	hex_payload: &str,
-	salt_path: String,
-	challenge_command: Option<String>,
+	yubikey: YubiKeyInputs,
 ) -> Result<(), Error> {
 	let bytes = qos_hex::decode(hex_payload)?;
 
-	let mut pair = PairOrYubi::from_inputs(
-		true,
-		None,
-		Some(salt_path),
-		challenge_command,
-	)?;
+	let mut pair = PairOrYubi::from_inputs(true, None, yubikey)?;
 	let signature_bytes = pair.sign(&bytes)?;
 	let signature = qos_hex::encode(&signature_bytes);
 
@@ -1757,17 +1811,9 @@ pub(crate) fn yubikey_sign(
 }
 
 /// Print the `YubiKey` member public key as hex.
-pub(crate) fn yubikey_public(
-	salt_path: String,
-	challenge_command: Option<String>,
-) -> Result<(), Error> {
-	let public = PairOrYubi::from_inputs(
-		true,
-		None,
-		Some(salt_path),
-		challenge_command,
-	)?
-	.public_key_bytes()?;
+pub(crate) fn yubikey_public(yubikey: YubiKeyInputs) -> Result<(), Error> {
+	let public =
+		PairOrYubi::from_inputs(true, None, yubikey)?.public_key_bytes()?;
 
 	let hex = qos_hex::encode(&public);
 	println!("{hex}");

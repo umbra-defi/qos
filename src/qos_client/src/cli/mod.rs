@@ -71,6 +71,7 @@ const DISPLAY_TYPE: &str = "display-type";
 const DR_KEY_PATH: &str = "dr-key-path";
 const YUBIKEY_SALT_PATH: &str = "yubikey-salt-path";
 const CHALLENGE_COMMAND: &str = "challenge-command";
+const YUBIKEY_PASSPHRASE_PATH: &str = "yubikey-passphrase-path";
 const ENCRYPTED_QUORUM_KEY_PATH: &str = "encrypted-quorum-key-path";
 const PAYLOAD: &str = "payload";
 const PAYLOAD_PATH: &str = "payload-path";
@@ -552,6 +553,15 @@ impl Command {
 		.required(false)
 		.forbids(vec![SECRET_PATH])
 	}
+	fn yubikey_passphrase_path_token() -> Token {
+		Token::new(
+			YUBIKEY_PASSPHRASE_PATH,
+			"File holding the YubiKey member passphrase; without it, the passphrase is prompted for.",
+		)
+		.takes_value(true)
+		.required(false)
+		.forbids(vec![SECRET_PATH])
+	}
 	fn challenge_command_token() -> Token {
 		Token::new(
 			CHALLENGE_COMMAND,
@@ -672,6 +682,7 @@ impl Command {
 			.token(Self::pcr3_preimage_path_token())
 			.token(Self::unsafe_skip_attestation_token())
 			.token(Self::yubikey_salt_path_token())
+			.token(Self::yubikey_passphrase_path_token())
 			.token(Self::challenge_command_token())
 			.token(Self::validation_time_override_token())
 	}
@@ -713,6 +724,7 @@ impl Command {
 		Parser::new()
 			.token(Self::yubikey_token())
 			.token(Self::yubikey_salt_path_token())
+			.token(Self::yubikey_passphrase_path_token())
 			.token(Self::challenge_command_token())
 			.token(Self::secret_path_token())
 			.token(Self::manifest_path_token())
@@ -746,6 +758,7 @@ impl Command {
 		Parser::new()
 			.token(Self::yubikey_token())
 			.token(Self::yubikey_salt_path_token())
+			.token(Self::yubikey_passphrase_path_token())
 			.token(Self::challenge_command_token())
 			.token(Self::secret_path_token())
 			.token(Self::share_path_token())
@@ -786,6 +799,7 @@ impl Command {
 		Parser::new()
 			.token(Self::pub_path_token())
 			.token(Self::yubikey_salt_path_token().required(true))
+			.token(Self::yubikey_passphrase_path_token())
 			.token(Self::challenge_command_token())
 	}
 
@@ -807,12 +821,14 @@ impl Command {
 		Parser::new()
 			.token(Self::payload_token())
 			.token(Self::yubikey_salt_path_token().required(true))
+			.token(Self::yubikey_passphrase_path_token())
 			.token(Self::challenge_command_token())
 	}
 
 	fn yubikey_public() -> Parser {
 		Parser::new()
 			.token(Self::yubikey_salt_path_token().required(true))
+			.token(Self::yubikey_passphrase_path_token())
 			.token(Self::challenge_command_token())
 	}
 
@@ -1263,6 +1279,18 @@ impl ClientOpts {
 		self.parsed.single(CHALLENGE_COMMAND).map(Into::into)
 	}
 
+	fn yubikey_passphrase_path(&self) -> Option<String> {
+		self.parsed.single(YUBIKEY_PASSPHRASE_PATH).map(Into::into)
+	}
+
+	fn yubikey_inputs(&self) -> services::YubiKeyInputs {
+		services::YubiKeyInputs {
+			salt_path: self.yubikey_salt_path(),
+			challenge_command: self.challenge_command(),
+			passphrase_path: self.yubikey_passphrase_path(),
+		}
+	}
+
 	fn validation_time_override(&self) -> Option<u64> {
 		self.parsed.single(VALIDATION_TIME_OVERRIDE).map(|t| {
 			t.parse().expect("invalid u64 for `--validation-time-override`")
@@ -1511,14 +1539,19 @@ mod handlers {
 	}
 
 	pub(super) fn provision_yubikey(opts: &ClientOpts) {
+		let Some(salt_path) = opts.yubikey_salt_path() else {
+			eprintln!("Error: {:?}", services::Error::YubiKeyNeedsSaltPath);
+			std::process::exit(1);
+		};
 		if let Err(e) = services::provision_yubikey(
 			opts.pub_path(),
-			opts.yubikey_salt_path().expect("Missing `--yubikey-salt-path`"),
+			salt_path,
 			opts.challenge_command()
 				.unwrap_or_else(|| {
 					crate::otp::DEFAULT_CHALLENGE_COMMAND.to_string()
 				})
 				.as_str(),
+			opts.yubikey_passphrase_path().as_deref(),
 		) {
 			eprintln!("Error: {e:?}");
 			std::process::exit(1);
@@ -1526,21 +1559,16 @@ mod handlers {
 	}
 
 	pub(super) fn yubikey_sign(opts: &ClientOpts) {
-		if let Err(e) = services::yubikey_sign(
-			&opts.payload(),
-			opts.yubikey_salt_path().expect("Missing `--yubikey-salt-path`"),
-			opts.challenge_command(),
-		) {
+		if let Err(e) =
+			services::yubikey_sign(&opts.payload(), opts.yubikey_inputs())
+		{
 			eprintln!("Error: {e:?}");
 			std::process::exit(1);
 		}
 	}
 
 	pub(super) fn yubikey_public(opts: &ClientOpts) {
-		if let Err(e) = services::yubikey_public(
-			opts.yubikey_salt_path().expect("Missing `--yubikey-salt-path`"),
-			opts.challenge_command(),
-		) {
+		if let Err(e) = services::yubikey_public(opts.yubikey_inputs()) {
 			eprintln!("Error: {e:?}");
 			std::process::exit(1);
 		}
@@ -1775,8 +1803,7 @@ mod handlers {
 		match PairOrYubi::from_inputs(
 			opts.yubikey(),
 			opts.secret_path(),
-			opts.yubikey_salt_path(),
-			opts.challenge_command(),
+			opts.yubikey_inputs(),
 		) {
 			Err(e) => {
 				eprintln!("Error: {e:?}");

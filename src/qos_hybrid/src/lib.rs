@@ -405,6 +405,17 @@ impl HybridPublic {
 		self.encrypt_public.to_bytes().into_boxed_slice()
 	}
 
+	/// Each component public key, in serialization order: ML-KEM-1024,
+	/// X25519, ML-DSA-87 and Ed25519.
+	#[must_use]
+	pub fn component_public_keys(&self) -> [Vec<u8>; 4] {
+		let encrypt = self.encrypt_public.to_bytes();
+		let sign = self.sign_public.to_bytes();
+		let (ml_kem, x25519) = encrypt.split_at(ML_KEM_PUBLIC_LEN);
+		let (ml_dsa, ed25519) = sign.split_at(ML_DSA_PUBLIC_LEN);
+		[ml_kem.to_vec(), x25519.to_vec(), ml_dsa.to_vec(), ed25519.to_vec()]
+	}
+
 	/// Serialize the signing half, `ml_dsa_public||ed25519_public`.
 	#[must_use]
 	pub fn signing_public_key_bytes(&self) -> Box<[u8]> {
