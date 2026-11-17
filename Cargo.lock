@@ -2155,6 +2155,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos_hybrid_fuzz"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "libfuzzer-sys",
+ "umbra_qos_hybrid",
+ "zeroize",
+]
+
+[[package]]
 name = "qos_net_fuzz"
 version = "0.0.0"
 dependencies = [

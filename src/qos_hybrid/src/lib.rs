@@ -234,7 +234,7 @@ impl HybridPair {
 			),
 			sign_private: HybridSignPair::from_seeds(&ml_dsa_xi, &ed25519),
 			master_seed: master_seed.clone(),
-			aes_gcm_256_secret: AesGcm256Secret::from_bytes(*aes_gcm_256),
+			aes_gcm_256_secret: AesGcm256Secret::from_bytes(&aes_gcm_256),
 		})
 	}
 

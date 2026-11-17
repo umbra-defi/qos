@@ -21,6 +21,7 @@ members = [
   "src/qos_net/fuzz",
   "src/qos_nsm/fuzz",
   "src/qos_p256/fuzz",
+  "src/qos_hybrid/fuzz",
 ]
 default-members = [
   "src/integration",
