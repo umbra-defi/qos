@@ -11,6 +11,7 @@ Boot new QOS nodes without manually submitting Quorum Key shares to new nodes. I
 * **Local Manifest**: The manifest used to boot the Original Node. It is local relative to the Original Node.
 * **Setup Ephemeral Key**: The New Node key used as the encryption target for the forwarded Quorum Key. Setup attestations commit this key and the New Manifest hash in PCR16.
 * **Live Ephemeral Key**: The New Node key installed after key injection. Live/app attestations commit this key and the New Manifest hash in PCR17.
+* **App Key**: A key every enclave of one manifest shares. It is minted inside an enclave and only ever leaves one sealed to another attested enclave of the same manifest, so unlike the Quorum Key it cannot be rebuilt from shares or a disaster-recovery key. See [Enclave Keys](enclave_keys.md#app-key).
 
 ## Other relevant terms
 
@@ -26,7 +27,10 @@ The details for how QOS nodes communicate with each other can vary, but for the 
     ```rust
     struct BootKeyForwardRequest {
       manifest_envelope: ManifestEnvelope,
-      pivot: Vec<u8>
+      pivot: Vec<u8>,
+      // Receive (default) or Mint: whether this boot may mint the App Key
+      // when the Original Node runs another manifest.
+      app_key_mode: AppKeyMode,
     }
     ```
 
@@ -67,11 +71,14 @@ The details for how QOS nodes communicate with each other can vary, but for the 
     1) Recompute the setup manifest/key commitment from the New Manifest hash and the attested `public_key`, then check that it matches PCR16.
     1) Check that PCR3 in the New Manifest is in the Local Manifests. PCR3 is the IAM role assigned to the EC2 host of the enclave. An IAM role contains an AWS organization's unique ID. By only using the approved PCR3 value we ensure that we only ever send the Quorum Key to an enclave that is controlled by the operator, not an enclave that some malicious entity runs that is otherwise configured identically to one of the operator's enclaves.
     1) Return the Quorum Key encrypted to the New Node's setup Ephemeral Key extracted from the attestation document and a signature over the encrypted payload. The Original Node uses its Quorum Key to create the signature.
+    1) If the New Manifest hash equals the Local Manifest hash, also encrypt the App Key to the same setup Ephemeral Key, and attest the ciphertext: request an attestation document whose `user_data` is SHA-512 over `qos_app_key_transfer_v1`, the setup Ephemeral Key's attestation binding and the encrypted App Key. The Quorum Key signature cannot vouch for the App Key, because the Quorum Key can be rebuilt outside an enclave; only an enclave can produce this document.
 
         ```rust
           struct ExportKeyResponse {
             encrypted_quorum_key: Vec<u8>,
-            signature: Vec<u8>
+            signature: Vec<u8>,
+            encrypted_app_key: Option<Vec<u8>>,
+            app_key_attestation_doc: Option<Vec<u8>>,
           }
         ```
 
@@ -80,7 +87,9 @@ The details for how QOS nodes communicate with each other can vary, but for the 
     ```rust
       struct InjectKeyRequest {
         encrypted_quorum_key: Vec<u8>,
-        signature: Vec<u8>
+        signature: Vec<u8>,
+        encrypted_app_key: Option<Vec<u8>>,
+        app_key_attestation_doc: Option<Vec<u8>>,
       }
     ```
 
@@ -88,6 +97,10 @@ The details for how QOS nodes communicate with each other can vary, but for the 
     1) Verify the signature over the `encrypted_quorum_key` against the Quorum Key specified in the New Manifest.
     1) Decrypt the encrypted Quorum Key in the request with the setup Ephemeral Key.
     1) Check that the decrypted Quorum Key public key matches the one specified in the New Manifest.
+    1) Get the App Key:
+        * If the request carries one, check the sender's attestation document: it chains to the trusted root, PCR0 through PCR3 match the New Manifest, PCR18 commits to the New Manifest hash, and `user_data` binds this Node's setup Ephemeral Key and the exact encrypted App Key. Then decrypt it with the setup Ephemeral Key.
+        * If it carries none and `app_key_mode` is `Mint`, mint one.
+        * If it carries none and `app_key_mode` is `Receive`, fail without pivoting.
     1) Rotate to the precommitted live Ephemeral Key so app-level uses do not reuse the setup key that protected key injection. Later live/app attestations are verified by recomputing PCR17 from the New Manifest hash and the attested live `public_key`.
-    1) Write the Quorum Key to the file system, at which point New Node will automatically pivot to running the Pivot App.
+    1) Write the App Key, then the Quorum Key, to the file system, at which point New Node will automatically pivot to running the Pivot App.
     1) Return `InjectKeyResponse { }` (an empty struct) to signify that it was successful.
