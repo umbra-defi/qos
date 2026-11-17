@@ -1813,7 +1813,7 @@ pub(crate) fn hybrid_sign<P: AsRef<Path>>(
 	write_with_msg(
 		signature_path.as_ref(),
 		signature.as_bytes(),
-		"ML-DSA-87 signature",
+		"ML-DSA-87 + Ed25519 signature",
 	);
 
 	Ok(())

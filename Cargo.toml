@@ -78,6 +78,7 @@ chunked_transfer = { version = "1.5.0", default-features = false }
 etherparse = { version = "0.20.1", default-features = false }
 fips203 = { version = "0.4.3", default-features = false }
 fips204 = { version = "0.4.6", default-features = false }
+ed25519-dalek = { version = "2.2.0", default-features = false }
 futures = { version = "0.3.30" }
 der = { version = "0.7", default-features = false }
 hex-literal = "0.4.0"
