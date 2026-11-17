@@ -1,10 +1,17 @@
 //! Member keys derived from a `YubiKey` OTP challenge-response slot.
 //!
 //! A `YubiKey` member's hybrid key is never stored. Its 32-byte master seed is
-//! `HKDF-SHA512(salt, response, OTP_SEED_INFO)`, where `response` is the
-//! device's HMAC-SHA1 answer to the challenge `salt`. The salt is public and
-//! sits in a file beside the member's public key; the slot secret never leaves
-//! the device. Losing either the salt file or the device loses the key.
+//! `HKDF-SHA512(salt, response||Argon2id(passphrase, salt), OTP_SEED_INFO)`,
+//! where `response` is the device's 20-byte HMAC-SHA1 answer to the challenge
+//! `salt`. The salt is public and sits in a file beside the member's public
+//! key; the slot secret never leaves the device. Losing the salt file, the
+//! device or the passphrase loses the key.
+//!
+//! The device answers a given salt the same way forever, so one captured
+//! response would otherwise rebuild the key for good. The passphrase is what
+//! that capture still lacks, the way a PIN guarded a PIV key: an attacker
+//! holding a response must still guess the passphrase, at an Argon2id cost per
+//! guess.
 //!
 //! The challenge command runs through `sh -c` with `{challenge}` replaced by
 //! the hex salt, so an operator pins a device with
@@ -13,6 +20,7 @@
 
 use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _, path::Path};
 
+use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
 use qos_hybrid::{HybridError, HybridPair, MASTER_SEED_LEN, bytes_os_rng};
 use sha2::Sha512;
@@ -25,7 +33,20 @@ pub const DEFAULT_CHALLENGE_COMMAND: &str = "ykman otp calculate 2 {challenge}";
 /// Length of a member salt.
 pub const SALT_LEN: usize = 32;
 /// HKDF-SHA512 info string of the member seed derivation.
-pub const OTP_SEED_INFO: &[u8] = b"qos_hybrid_yubikey_otp_member_seed_v1";
+pub const OTP_SEED_INFO: &[u8] =
+	b"qos_hybrid_yubikey_otp_passphrase_member_seed_v1";
+/// Length of an HMAC-SHA1 challenge-response answer.
+pub const RESPONSE_LEN: usize = 20;
+/// Shortest passphrase a new member key accepts.
+pub const PASSPHRASE_MIN_LEN: usize = 12;
+/// Argon2id memory cost, in KiB (64 MiB, RFC 9106's second recommendation).
+pub const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+/// Argon2id passes over memory.
+pub const ARGON2_ITERATIONS: u32 = 3;
+/// Argon2id lanes.
+pub const ARGON2_LANES: u32 = 1;
+/// Length of the Argon2id passphrase key.
+const PASSPHRASE_KEY_LEN: usize = 32;
 
 const DESTRUCTIVE_DEVICE_COMMANDS: &[&str] = &[
 	"reset",
@@ -63,6 +84,13 @@ pub enum OtpError {
 	ResponseNotHex(String),
 	/// The command printed nothing.
 	ResponseEmpty,
+	/// The command's answer is not a 20-byte HMAC-SHA1 response.
+	ResponseWrongLength(usize),
+	/// A new member key's passphrase is shorter than
+	/// [`PASSPHRASE_MIN_LEN`].
+	PassphraseTooShort,
+	/// Argon2id refused its parameters or input.
+	Argon2(String),
 	/// Two different challenges got the same answer, so the device never saw
 	/// the salt.
 	ChallengeIgnored,
@@ -136,6 +164,7 @@ fn respond(
 		.arg(&rendered)
 		.output()
 		.map_err(|e| OtpError::CommandFailed(e.to_string()))?;
+	let stdout = Zeroizing::new(output.stdout);
 	if !output.status.success() {
 		return Err(OtpError::CommandFailed(format!(
 			"exit {}: {}",
@@ -144,29 +173,58 @@ fn respond(
 		)));
 	}
 
-	let text = Zeroizing::new(
-		String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-	);
+	let text =
+		Zeroizing::new(String::from_utf8_lossy(&stdout).trim().to_owned());
 	if text.is_empty() {
 		return Err(OtpError::ResponseEmpty);
 	}
-	qos_hex::decode(&text)
+	let response = qos_hex::decode(&text)
 		.map(Zeroizing::new)
-		.map_err(|e| OtpError::ResponseNotHex(format!("{e:?}")))
+		.map_err(|e| OtpError::ResponseNotHex(format!("{e:?}")))?;
+	if response.len() != RESPONSE_LEN {
+		return Err(OtpError::ResponseWrongLength(response.len()));
+	}
+	Ok(response)
+}
+
+fn passphrase_key(
+	passphrase: &[u8],
+	salt: &[u8],
+) -> Result<Zeroizing<[u8; PASSPHRASE_KEY_LEN]>, OtpError> {
+	let params = Params::new(
+		ARGON2_MEMORY_KIB,
+		ARGON2_ITERATIONS,
+		ARGON2_LANES,
+		Some(PASSPHRASE_KEY_LEN),
+	)
+	.map_err(|e| OtpError::Argon2(e.to_string()))?;
+	let mut key = Zeroizing::new([0u8; PASSPHRASE_KEY_LEN]);
+	Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+		.hash_password_into(passphrase, salt, &mut *key)
+		.map_err(|e| OtpError::Argon2(e.to_string()))?;
+	Ok(key)
 }
 
 fn pair_from_response(
 	response: &[u8],
 	salt: &[u8],
+	passphrase: &[u8],
 ) -> Result<HybridPair, OtpError> {
+	let passphrase_key = passphrase_key(passphrase, salt)?;
+	let mut input_key =
+		Zeroizing::new(Vec::with_capacity(response.len() + PASSPHRASE_KEY_LEN));
+	input_key.extend_from_slice(response);
+	input_key.extend_from_slice(&*passphrase_key);
+
 	let mut seed = Zeroizing::new([0u8; MASTER_SEED_LEN]);
-	Hkdf::<Sha512>::new(Some(salt), response)
+	Hkdf::<Sha512>::new(Some(salt), &input_key)
 		.expand(OTP_SEED_INFO, &mut *seed)
 		.map_err(|_| HybridError::HkdfExpansionFailed)?;
 	HybridPair::from_master_seed(&seed).map_err(Into::into)
 }
 
-/// Derive the member pair for `salt` from one device response.
+/// Derive the member pair for `salt` and `passphrase` from one device
+/// response.
 ///
 /// # Errors
 ///
@@ -175,8 +233,9 @@ fn pair_from_response(
 pub fn derive_member_pair(
 	command: &str,
 	salt: &[u8],
+	passphrase: &[u8],
 ) -> Result<HybridPair, OtpError> {
-	pair_from_response(&respond(command, salt)?, salt)
+	pair_from_response(&respond(command, salt)?, salt, passphrase)
 }
 
 /// Derive the member pair for `salt`, first proving the device answers the
@@ -185,13 +244,18 @@ pub fn derive_member_pair(
 ///
 /// # Errors
 ///
-/// Returns [`OtpError::ChallengeIgnored`] or [`OtpError::ResponseUnstable`]
-/// for a command that would not reproduce the key, and [`OtpError`] for any
-/// other failure.
+/// Returns [`OtpError::PassphraseTooShort`] for a passphrase under
+/// [`PASSPHRASE_MIN_LEN`], [`OtpError::ChallengeIgnored`] or
+/// [`OtpError::ResponseUnstable`] for a command that would not reproduce the
+/// key, and [`OtpError`] for any other failure.
 pub fn derive_member_pair_probed(
 	command: &str,
 	salt: &[u8],
+	passphrase: &[u8],
 ) -> Result<HybridPair, OtpError> {
+	if passphrase.len() < PASSPHRASE_MIN_LEN {
+		return Err(OtpError::PassphraseTooShort);
+	}
 	let mut probe = fresh_salt();
 	if probe.as_slice() == salt {
 		probe[0] ^= 1;
@@ -205,7 +269,7 @@ pub fn derive_member_pair_probed(
 		return Err(OtpError::ResponseUnstable);
 	}
 
-	pair_from_response(&first, salt)
+	pair_from_response(&first, salt, passphrase)
 }
 
 /// Read a hex member salt from `path`.
@@ -266,22 +330,68 @@ mod test {
 
 	use super::*;
 
-	const ECHO_COMMAND: &str = "printf '%s' {challenge}";
+	const ECHO_COMMAND: &str = "printf '%s' {challenge} | cut -c1-40";
+	const PASSPHRASE: &[u8] = b"correct horse battery";
 
 	#[test]
 	fn same_salt_derives_the_same_pair() {
 		let salt = fresh_salt();
 
-		let first = derive_member_pair(ECHO_COMMAND, &salt).unwrap();
-		let second = derive_member_pair_probed(ECHO_COMMAND, &salt).unwrap();
+		let first =
+			derive_member_pair(ECHO_COMMAND, &salt, PASSPHRASE).unwrap();
+		let second =
+			derive_member_pair_probed(ECHO_COMMAND, &salt, PASSPHRASE).unwrap();
 
 		assert!(first.public_key() == second.public_key());
 	}
 
 	#[test]
+	fn a_captured_response_without_the_passphrase_derives_another_key() {
+		let salt = fresh_salt();
+
+		let member =
+			derive_member_pair(ECHO_COMMAND, &salt, PASSPHRASE).unwrap();
+		let guess =
+			derive_member_pair(ECHO_COMMAND, &salt, b"wrong passphrase!")
+				.unwrap();
+
+		assert!(
+			member.public_key() != guess.public_key(),
+			"the device response alone must not rebuild the member key"
+		);
+	}
+
+	#[test]
+	fn probe_rejects_a_short_passphrase() {
+		assert!(matches!(
+			derive_member_pair_probed(
+				ECHO_COMMAND,
+				&fresh_salt(),
+				b"too short"
+			),
+			Err(OtpError::PassphraseTooShort)
+		));
+	}
+
+	#[test]
+	fn response_that_is_not_hmac_sha1_length_is_refused() {
+		assert!(matches!(
+			derive_member_pair(
+				"printf '%s' {challenge}",
+				&fresh_salt(),
+				PASSPHRASE
+			),
+			Err(OtpError::ResponseWrongLength(32))
+		));
+	}
+
+	#[test]
 	fn different_salts_derive_different_pairs() {
-		let first = derive_member_pair(ECHO_COMMAND, &fresh_salt()).unwrap();
-		let second = derive_member_pair(ECHO_COMMAND, &fresh_salt()).unwrap();
+		let first = derive_member_pair(ECHO_COMMAND, &fresh_salt(), PASSPHRASE)
+			.unwrap();
+		let second =
+			derive_member_pair(ECHO_COMMAND, &fresh_salt(), PASSPHRASE)
+				.unwrap();
 
 		assert!(first.public_key() != second.public_key());
 	}
@@ -289,7 +399,7 @@ mod test {
 	#[test]
 	fn command_without_placeholder_is_refused() {
 		assert!(matches!(
-			derive_member_pair("echo 00", &fresh_salt()),
+			derive_member_pair("echo 00", &fresh_salt(), PASSPHRASE),
 			Err(OtpError::CommandMissingChallenge)
 		));
 	}
@@ -312,7 +422,11 @@ mod test {
 	#[test]
 	fn probe_rejects_a_command_that_ignores_the_challenge() {
 		assert!(matches!(
-			derive_member_pair_probed("echo 00 # {challenge}", &fresh_salt()),
+			derive_member_pair_probed(
+				"printf '%040d' 0 # {challenge}",
+				&fresh_salt(),
+				PASSPHRASE
+			),
 			Err(OtpError::ChallengeIgnored)
 		));
 	}
@@ -320,10 +434,10 @@ mod test {
 	#[test]
 	fn probe_rejects_an_unstable_command() {
 		let unstable =
-			"od -An -N16 -tx1 /dev/urandom | tr -d ' \\n' # {challenge}";
+			"od -An -N20 -tx1 /dev/urandom | tr -d ' \\n' # {challenge}";
 
 		assert!(matches!(
-			derive_member_pair_probed(unstable, &fresh_salt()),
+			derive_member_pair_probed(unstable, &fresh_salt(), PASSPHRASE),
 			Err(OtpError::ResponseUnstable)
 		));
 	}

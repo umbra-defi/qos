@@ -1,0 +1,46 @@
+[package]
+name = "qos_hybrid_fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.88"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+zeroize = { version = "1.8", features = ["alloc", "derive"] }
+
+qos_hybrid = { path = "../", package = "umbra_qos_hybrid" }
+
+[[bin]]
+name = "1_sign_then_verify"
+path = "fuzz_targets/1_sign_then_verify.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "2_public_key_import"
+path = "fuzz_targets/2_public_key_import.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "3_verify_forged_signature"
+path = "fuzz_targets/3_verify_forged_signature.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "4_decrypt_envelope"
+path = "fuzz_targets/4_decrypt_envelope.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "5_decrypt_aes_gcm"
+path = "fuzz_targets/5_decrypt_aes_gcm.rs"
+test = false
+doc = false

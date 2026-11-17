@@ -200,7 +200,7 @@ impl HostServer {
 				|e| Error(format!("unable to get manifest envelope: {e:?}")),
 			)?;
 		let ephemeral_key =
-			get_eph_key_from_attestation_doc(&state.enclave_client).await;
+			get_attested_ephemeral_key(&state.enclave_client).await;
 		let vitals_log = if let Some(m) = manifest_envelope.as_ref() {
 			let manifest = m.clone().manifest();
 			serde_json::to_string(&EnclaveVitalStats {
@@ -263,7 +263,10 @@ impl HostServer {
 	}
 }
 
-async fn get_eph_key_from_attestation_doc(
+/// Hex of the enclave's live ephemeral public key, if the live attestation
+/// document's `public_key` field holds its attestation binding. The field
+/// carries only the 64-byte binding, so the full key comes from the response.
+async fn get_attested_ephemeral_key(
 	enclave_client: &SocketClient,
 ) -> Option<String> {
 	use ProtocolMsg::LiveAttestationDocResponse;
@@ -272,7 +275,10 @@ async fn get_eph_key_from_attestation_doc(
 	let resp_bytes = enclave_client.call(&req).await.ok()?;
 	let resp = ProtocolMsg::from_wire_any(&resp_bytes).ok()?;
 
-	let LiveAttestationDocResponse { nsm_response, .. } = resp else {
+	let LiveAttestationDocResponse {
+		nsm_response, ephemeral_public_key, ..
+	} = resp
+	else {
 		return None;
 	};
 
@@ -282,7 +288,11 @@ async fn get_eph_key_from_attestation_doc(
 
 	let attestation_doc =
 		qos_nsm::nitro::unsafe_attestation_doc_from_der(&document).ok()?;
-	attestation_doc.public_key.as_ref().map(|pk| qos_hex::encode(pk))
+	let binding = attestation_doc.public_key?;
+	let ephemeral_key =
+		qos_hybrid::HybridPublic::from_bytes(&ephemeral_public_key).ok()?;
+	(ephemeral_key.attestation_binding().as_slice() == binding.as_slice())
+		.then(|| qos_hex::encode(&ephemeral_public_key))
 }
 
 // try to get the manifest denvelope from the enclave, used for restart handling of qos_host

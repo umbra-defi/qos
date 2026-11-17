@@ -163,8 +163,7 @@ impl HybridEncryptPublic {
 		let ml_kem_shared = Zeroizing::new(ml_kem_shared.into_bytes());
 		let ml_kem_ciphertext = ciphertext.into_bytes();
 
-		let ephemeral_secret =
-			StaticSecret::from(*bytes_os_rng::<DERIVED_SECRET_LEN>());
+		let ephemeral_secret = StaticSecret::random();
 		let ephemeral_x25519_public =
 			X25519Public::from(&ephemeral_secret).to_bytes();
 		let x25519_shared = ephemeral_secret
@@ -306,8 +305,8 @@ impl AesGcm256Secret {
 
 	/// Create [`Self`] from bytes.
 	#[must_use]
-	pub fn from_bytes(bytes: [u8; AES256_KEY_LEN]) -> Self {
-		Self { secret: Zeroizing::new(bytes) }
+	pub fn from_bytes(bytes: &Zeroizing<[u8; AES256_KEY_LEN]>) -> Self {
+		Self { secret: bytes.clone() }
 	}
 
 	/// Encrypt the given `msg`, returning a serialized [`SymmetricEnvelope`].

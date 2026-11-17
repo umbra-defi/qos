@@ -114,14 +114,16 @@ stage-specific Ephemeral Keys:
 - the live key, verified with PCR17, for app proofs and other post-provision
   uses.
 
-The attestation document carries the selected key in `public_key` and the
-manifest hash in `user_data`. Verifiers check PCR0 through PCR3 from the
-manifest, require the release-pinned PCR range to be present, and recompute
-PCR16 or PCR17 for the attestation stage they are verifying.
+The attestation document carries the selected key's 64-byte binding in
+`public_key` (the hybrid key itself does not fit) and the manifest hash in
+`user_data`; the full key travels beside the document. Verifiers check the key
+against the binding, check PCR0 through PCR3 from the manifest, require the
+release-pinned PCR range to be present, and recompute PCR16 or PCR17 for the
+attestation stage they are verifying.
 
 Most App Proof consumers only need the live/app check: verify the live
-attestation against PCR17 and require the App Proof signature key to match the
-attested live public key. PCR16 is for setup-time provisioning and key
+attestation against PCR17 and require the App Proof signature key to be the
+live key whose binding the document attests. PCR16 is for setup-time provisioning and key
 forwarding; it is only needed by verifiers that also want to tie an App Proof
 back to the setup/QK-delivery event.
 
@@ -145,5 +147,5 @@ documentation.
   quorum key shares.
 - [Key Forward](key_forward.md) explains provisioning a new enclave from an
   already provisioned enclave in the same namespace.
-- [QOS Key Set Specification](../src/qos_p256/SPEC.md) describes the key
+- [QOS Hybrid Key Set Specification](../src/qos_hybrid/SPEC.md) describes the key
   schemes used by QOS keys.

@@ -24,8 +24,11 @@ qos_json = { workspace = true }
 # Third party
 ureq = { workspace = true }
 aws-nitro-enclaves-nsm-api = { workspace = true }
+argon2 = { workspace = true }
 borsh = { workspace = true}
 hkdf = { workspace = true }
+nix = { workspace = true, features = ["fs"] }
+rpassword = { workspace = true }
 sha2 = { workspace = true }
 rand_core = { workspace = true, features = ["os_rng"] }
 zeroize = { workspace = true, features = ["alloc"] }

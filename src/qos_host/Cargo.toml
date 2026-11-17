@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 qos_core = { workspace = true, default-features = false }
 qos_hex = { workspace = true, features = ["serde"], default-features = false }
+qos_hybrid = { workspace = true }
 qos_nsm = { workspace = true, default-features = false }
 
 # Third party

@@ -12,7 +12,6 @@ members = [
   "src/qos_net",
   "src/qos_test_harness",
   "src/qos_test_primitives",
-  "src/qos_p256",
   "src/qos_hybrid",
   "src/qos_nsm",
   "src/signed_echo",
@@ -20,7 +19,7 @@ members = [
   "src/qos_crypto/fuzz",
   "src/qos_net/fuzz",
   "src/qos_nsm/fuzz",
-  "src/qos_p256/fuzz",
+  "src/qos_hybrid/fuzz",
 ]
 default-members = [
   "src/integration",
@@ -35,7 +34,6 @@ default-members = [
   "src/qos_net",
   "src/qos_test_harness",
   "src/qos_test_primitives",
-  "src/qos_p256",
   "src/qos_hybrid",
   "src/qos_nsm",
   "src/signed_echo",
@@ -78,11 +76,13 @@ chunked_transfer = { version = "1.5.0", default-features = false }
 etherparse = { version = "0.20.1", default-features = false }
 fips203 = { version = "0.4.3", default-features = false }
 fips204 = { version = "0.4.6", default-features = false }
+ed25519-dalek = { version = "2.2.0", default-features = false }
 futures = { version = "0.3.30" }
 der = { version = "0.7", default-features = false }
 hex-literal = "0.4.0"
 hickory-resolver = { version = "0.26.2", features = ["tokio", "dnssec-ring"], default-features = false }
 hkdf = { version = "0.12", default-features = false }
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "zeroize"] }
 hmac = { version = "0.12", default-features = false }
 httparse = { version = "1.9.4", default-features = false }
 lazy_static = "1.4"
@@ -108,7 +108,6 @@ webpki = { version = "0.22.4", default-features = false }
 webpki-roots = { version = "1.0.10" }
 x509-cert = { version = "0.2.5", features = ["pem"], default-features = false }
 x25519-dalek = { version = "2.0.1", default-features = false }
-yubikey = { version = "0.8", features = ["untested"], default-features = false }
 zeroize = { version = "1.8", default-features = false }
 
 # Internal workspace dependencies
@@ -123,12 +122,18 @@ qos_json = { path = "src/qos_json", package = "umbra_qos_json", version = "0.16.
 qos_net = { path = "src/qos_net", package = "umbra_qos_net", version = "0.16.2", default-features = false }
 qos_test_harness = { path = "src/qos_test_harness", version = "0.14.1" }
 qos_nsm = { path = "src/qos_nsm", package = "umbra_qos_nsm", version = "0.16.2", default-features = false }
-qos_p256 = { path = "src/qos_p256", package = "umbra_qos_p256", version = "0.16.2" }
 qos_hybrid = { path = "src/qos_hybrid", package = "umbra_qos_hybrid", version = "0.16.2" }
 qos_test_primitives = { path = "src/qos_test_primitives", package = "umbra_qos_test_primitives", version = "0.16.2" }
 
 # used for pivot_download integration/example only
 url = { version = "2.5.7", default-features = false }
+
+# Argon2id at the YubiKey member cost (64 MiB, 3 passes) takes seconds unoptimized; keep tests fast.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 # custom profile for qos_bridge/egress so we can abort in case of failures in any thread if using egress
 [profile.release-panic-abort]

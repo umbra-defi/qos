@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod otp;
+pub mod ram_volume;
 
 /// Host HTTP request helpers.
 pub mod request {
