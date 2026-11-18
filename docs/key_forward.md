@@ -28,9 +28,6 @@ The details for how QOS nodes communicate with each other can vary, but for the 
     struct BootKeyForwardRequest {
       manifest_envelope: ManifestEnvelope,
       pivot: Vec<u8>,
-      // Receive (default) or Mint: whether this boot may mint the App Key
-      // when the Original Node runs another manifest.
-      app_key_mode: AppKeyMode,
     }
     ```
 
@@ -97,10 +94,10 @@ The details for how QOS nodes communicate with each other can vary, but for the 
     1) Verify the signature over the `encrypted_quorum_key` against the Quorum Key specified in the New Manifest.
     1) Decrypt the encrypted Quorum Key in the request with the setup Ephemeral Key.
     1) Check that the decrypted Quorum Key public key matches the one specified in the New Manifest.
-    1) Get the App Key:
+    1) Settle the App Key:
+        * If the New Manifest names no `appKeyMinter`, there is none; a request that carries one is refused.
         * If the request carries one, check the sender's attestation document: it chains to the trusted root, PCR0 through PCR3 match the New Manifest, PCR18 commits to the New Manifest hash, and `user_data` binds this Node's setup Ephemeral Key and the exact encrypted App Key. Then decrypt it with the setup Ephemeral Key.
-        * If it carries none and `app_key_mode` is `Mint`, mint one.
-        * If it carries none and `app_key_mode` is `Receive`, fail without pivoting.
+        * If the manifest names a minter and the request carries no App Key, keep the Quorum Key in memory, return `InjectKeyResponse { awaiting_app_key: true }` and wait in `WaitingForAppKey` for a `MintAppKeyRequest` signed by the minter or an `InjectAppKeyRequest` from an enclave of the manifest (see [Enclave Keys](enclave_keys.md#app-key)). The steps below run once the App Key arrives.
     1) Rotate to the precommitted live Ephemeral Key so app-level uses do not reuse the setup key that protected key injection. Later live/app attestations are verified by recomputing PCR17 from the New Manifest hash and the attested live `public_key`.
-    1) Write the App Key, then the Quorum Key, to the file system, at which point New Node will automatically pivot to running the Pivot App.
-    1) Return `InjectKeyResponse { }` (an empty struct) to signify that it was successful.
+    1) Write the App Key, if any, then the Quorum Key, to the file system, at which point New Node will automatically pivot to running the Pivot App.
+    1) Return `InjectKeyResponse { awaiting_app_key: false }` to signify that it was successful.

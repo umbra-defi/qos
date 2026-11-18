@@ -3,7 +3,10 @@ use zeroize::Zeroizing;
 
 use crate::protocol::{
 	ProtocolError, ProtocolState,
-	services::boot::{Approval, VersionedManifestEnvelope},
+	services::{
+		app_key::{Settled, settle_quorum_key},
+		boot::{Approval, VersionedManifestEnvelope},
+	},
 };
 
 type Secret = Zeroizing<Vec<u8>>;
@@ -60,7 +63,7 @@ pub(in crate::protocol) fn provision(
 	encrypted_share: &[u8],
 	approval: Approval,
 	state: &mut ProtocolState,
-) -> Result<bool, ProtocolError> {
+) -> Result<Option<Settled>, ProtocolError> {
 	let manifest_envelope = state.handles.get_manifest_envelope()?;
 	let manifest = manifest_envelope.manifest();
 	let manifest_hash = manifest.manifest_hash();
@@ -101,7 +104,7 @@ pub(in crate::protocol) fn provision(
 	let quorum_threshold = manifest.share_set().threshold as usize;
 	if state.provisioner.count() < quorum_threshold {
 		// Nothing else to do if we don't have the threshold to reconstruct
-		return Ok(false);
+		return Ok(None);
 	}
 
 	let master_seed = state.provisioner.build()?;
@@ -121,23 +124,9 @@ pub(in crate::protocol) fn provision(
 		return Err(ProtocolError::ReconstructionErrorIncorrectPubKey);
 	}
 
-	// Rotate the ephemeral key so it's safe for apps to use it independently
-	// of boot-related operations, which use the pre-boot ephemeral key as
-	// an encryption target (boot standard flow encrypts quorum key shares to it.)
-	let live_ephemeral_key = state.take_pending_live_ephemeral_key()?;
-	state.handles.rotate_ephemeral_key(&live_ephemeral_key)?;
-
-	// A share-provisioned boot is the one the share set picked, so it mints
-	// the app key the rest of this manifest's enclaves receive by key forward.
-	state.handles.put_app_key(&qos_hybrid::HybridPair::generate()?)?;
-
-	// Write the quorum key to the file system.
-	// Note: it's important to do this _last_, because the enclave will
-	// automatically pivot to running the Pivot App once the file exists.
-	// (see `src/qos_core/src/reaper.rs`: we loop until the quorum key file exists)
-	state.handles.put_quorum_key(&pair)?;
-
-	Ok(true)
+	// Write the keys and pivot, or wait for the app key when the manifest
+	// names a minter: shares never carry one.
+	settle_quorum_key(state, pair, None).map(Some)
 }
 
 #[cfg(test)]
@@ -155,6 +144,7 @@ mod test {
 		protocol::{
 			ProtocolError, ProtocolPhase, ProtocolState, QosHash,
 			services::{
+				app_key::Settled,
 				boot::{
 					Approval, Manifest, ManifestEnvelope, ManifestSet,
 					Namespace, NitroConfig, PatchSet, PivotConfig,
@@ -306,7 +296,7 @@ mod test {
 		// write quorum key
 		for (i, share) in encrypted_shares[..threshold - 1].iter().enumerate() {
 			let approval = approvals[i].clone();
-			assert_eq!(provision(share, approval, &mut state), Ok(false));
+			assert_eq!(provision(share, approval, &mut state), Ok(None));
 			assert!(!Path::new(&*quorum_file).exists());
 			assert_eq!(
 				state.get_phase(),
@@ -320,14 +310,16 @@ mod test {
 		// quorum key as a ready only file
 		let share = &encrypted_shares[threshold];
 		let approval = approvals[threshold].clone();
-		assert_eq!(provision(share, approval, &mut state), Ok(true));
+		assert_eq!(
+			provision(share, approval, &mut state),
+			Ok(Some(Settled::Pivoting))
+		);
 		let quorum_key = std::fs::read(&*quorum_file).unwrap();
 
 		assert_eq!(quorum_key, quorum_pair.to_master_seed_hex().as_slice());
 
-		// The share-provisioned boot mints the app key before the quorum key
-		// file starts the pivot.
-		assert!(state.handles.get_app_key().is_ok());
+		// A manifest naming no minter has no app key.
+		assert!(state.handles.get_app_key().is_err());
 
 		// Make sure the EK is persisted
 		assert!(Path::new(&*eph_file).exists());
@@ -378,7 +370,7 @@ mod test {
 		// write quorum key
 		for (i, share) in encrypted_shares[..threshold - 1].iter().enumerate() {
 			let approval = approvals[i].clone();
-			assert_eq!(provision(share, approval, &mut state), Ok(false));
+			assert_eq!(provision(share, approval, &mut state), Ok(None));
 			assert!(!Path::new(&*quorum_file).exists());
 			assert_eq!(
 				state.get_phase(),
@@ -435,7 +427,7 @@ mod test {
 		// write quorum key
 		for (i, share) in encrypted_shares[..threshold - 1].iter().enumerate() {
 			let approval = approvals[i].clone();
-			assert_eq!(provision(share, approval, &mut state), Ok(false));
+			assert_eq!(provision(share, approval, &mut state), Ok(None));
 			assert!(!Path::new(&*quorum_file).exists());
 			assert_eq!(
 				state.get_phase(),

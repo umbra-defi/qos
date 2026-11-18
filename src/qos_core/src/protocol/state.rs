@@ -3,9 +3,7 @@ use qos_hybrid::HybridPair;
 use qos_nsm::NsmProvider;
 
 use super::{
-	error::ProtocolError,
-	msg::ProtocolMsg,
-	services::{key::AppKeyMode, provision::SecretBuilder},
+	error::ProtocolError, msg::ProtocolMsg, services::provision::SecretBuilder,
 };
 use crate::handles::Handles;
 
@@ -51,6 +49,10 @@ pub enum ProtocolPhase {
 		alias = "waitingForForwardedKey"
 	)]
 	WaitingForForwardedKey,
+	/// Holding the quorum key, unwritten, until the app key is minted by the
+	/// manifest minter's order or forwarded by an enclave of the manifest.
+	#[serde(rename = "WaitingForAppKey", alias = "waitingForAppKey")]
+	WaitingForAppKey,
 }
 
 /// Enclave routes
@@ -73,8 +75,10 @@ impl ProtocolRoute {
 		let resp = (self.handler)(msg, state);
 
 		// ignore transitions in special cases
-		if let Some(Ok(ProtocolMsg::ProvisionResponse { reconstructed })) = resp
-			&& !reconstructed
+		if let Some(Ok(ProtocolMsg::ProvisionResponse {
+			reconstructed: false,
+			..
+		})) = resp
 		{
 			return resp;
 		}
@@ -83,6 +87,13 @@ impl ProtocolRoute {
 		let transition = match resp {
 			None => None,
 			Some(ref result) => match result {
+				Ok(
+					ProtocolMsg::ProvisionResponse {
+						awaiting_app_key: true,
+						..
+					}
+					| ProtocolMsg::InjectKeyResponse { awaiting_app_key: true },
+				) => Some(ProtocolPhase::WaitingForAppKey),
 				Ok(_) => Some(self.ok_phase),
 				Err(_) => Some(self.err_phase),
 			},
@@ -177,6 +188,32 @@ impl ProtocolRoute {
 		)
 	}
 
+	// A refused order or app key leaves the boot waiting, so the next one can
+	// be sent.
+	pub fn mint_app_key(current_phase: ProtocolPhase) -> Self {
+		ProtocolRoute::new(
+			Box::new(handlers::mint_app_key),
+			ProtocolPhase::QuorumKeyProvisioned,
+			current_phase,
+		)
+	}
+
+	pub fn inject_app_key(current_phase: ProtocolPhase) -> Self {
+		ProtocolRoute::new(
+			Box::new(handlers::inject_app_key),
+			ProtocolPhase::QuorumKeyProvisioned,
+			current_phase,
+		)
+	}
+
+	pub fn export_app_key(current_phase: ProtocolPhase) -> Self {
+		ProtocolRoute::new(
+			Box::new(handlers::export_app_key),
+			current_phase,
+			current_phase,
+		)
+	}
+
 	fn new(
 		handler: Box<ProtocolRouteHandler>,
 		ok_phase: ProtocolPhase,
@@ -192,7 +229,7 @@ pub(crate) struct ProtocolState {
 	pub attestor: Box<dyn NsmProvider>,
 	pub handles: Handles,
 	pending_live_ephemeral_key: Option<HybridPair>,
-	app_key_mode: AppKeyMode,
+	pending_quorum_key: Option<HybridPair>,
 	phase: ProtocolPhase,
 }
 
@@ -217,7 +254,7 @@ impl ProtocolState {
 			attestor,
 			provisioner,
 			pending_live_ephemeral_key: None,
-			app_key_mode: AppKeyMode::default(),
+			pending_quorum_key: None,
 			phase: init_phase,
 			handles,
 		}
@@ -239,12 +276,16 @@ impl ProtocolState {
 			.ok_or(ProtocolError::MissingLiveEphemeralKey)
 	}
 
-	pub(crate) fn set_app_key_mode(&mut self, mode: AppKeyMode) {
-		self.app_key_mode = mode;
+	pub(crate) fn set_pending_quorum_key(&mut self, key: HybridPair) {
+		self.pending_quorum_key = Some(key);
 	}
 
-	pub(crate) fn app_key_mode(&self) -> AppKeyMode {
-		self.app_key_mode
+	pub(crate) fn take_pending_quorum_key(
+		&mut self,
+	) -> Result<HybridPair, ProtocolError> {
+		self.pending_quorum_key
+			.take()
+			.ok_or(ProtocolError::MissingPendingQuorumKey)
 	}
 
 	pub fn handle_msg_response(
@@ -314,6 +355,7 @@ impl ProtocolState {
 					ProtocolRoute::manifest_envelope(self.phase),
 					// phase specific routes
 					ProtocolRoute::export_key(self.phase),
+					ProtocolRoute::export_app_key(self.phase),
 				]
 			}
 			ProtocolPhase::WaitingForForwardedKey => {
@@ -325,6 +367,18 @@ impl ProtocolState {
 					ProtocolRoute::manifest_envelope(self.phase),
 					// phase specific routes
 					ProtocolRoute::inject_key(self.phase),
+				]
+			}
+			ProtocolPhase::WaitingForAppKey => {
+				vec![
+					// baseline routes
+					ProtocolRoute::status(self.phase),
+					ProtocolRoute::version(self.phase),
+					ProtocolRoute::live_attestation_doc(self.phase),
+					ProtocolRoute::manifest_envelope(self.phase),
+					// phase specific routes
+					ProtocolRoute::mint_app_key(self.phase),
+					ProtocolRoute::inject_app_key(self.phase),
 				]
 			}
 		}
@@ -354,12 +408,20 @@ impl ProtocolState {
 				vec![
 					ProtocolPhase::UnrecoverableError,
 					ProtocolPhase::QuorumKeyProvisioned,
+					ProtocolPhase::WaitingForAppKey,
 				]
 			}
 			ProtocolPhase::QuorumKeyProvisioned => {
 				vec![ProtocolPhase::UnrecoverableError]
 			}
 			ProtocolPhase::WaitingForForwardedKey => {
+				vec![
+					ProtocolPhase::UnrecoverableError,
+					ProtocolPhase::QuorumKeyProvisioned,
+					ProtocolPhase::WaitingForAppKey,
+				]
+			}
+			ProtocolPhase::WaitingForAppKey => {
 				vec![
 					ProtocolPhase::UnrecoverableError,
 					ProtocolPhase::QuorumKeyProvisioned,
@@ -384,7 +446,8 @@ mod handlers {
 		ProtocolState,
 		msg::ProtocolMsg,
 		services::{
-			attestation, boot, genesis, key, key::EncryptedQuorumKey, provision,
+			app_key, app_key::Settled, attestation, boot, genesis, key,
+			key::EncryptedQuorumKey, provision,
 		},
 	};
 
@@ -439,8 +502,9 @@ mod handlers {
 	) -> ProtocolRouteResponse {
 		if let ProtocolMsg::ProvisionRequest { share, approval } = req {
 			let result = provision::provision(share, approval.clone(), state)
-				.map(|reconstructed| ProtocolMsg::ProvisionResponse {
-					reconstructed,
+				.map(|settled| ProtocolMsg::ProvisionResponse {
+					reconstructed: settled.is_some(),
+					awaiting_app_key: settled == Some(Settled::AwaitingAppKey),
 				})
 				.map_err(ProtocolMsg::ProtocolErrorResponse);
 
@@ -527,25 +591,17 @@ mod handlers {
 		req: &ProtocolMsg,
 		state: &mut ProtocolState,
 	) -> ProtocolRouteResponse {
-		if let ProtocolMsg::BootKeyForwardRequest {
-			manifest_envelope,
-			pivot,
-			app_key_mode,
-		} = req
+		if let ProtocolMsg::BootKeyForwardRequest { manifest_envelope, pivot } =
+			req
 		{
-			let result = key::boot_key_forward(
-				state,
-				manifest_envelope,
-				pivot,
-				*app_key_mode,
-			)
-			.map(|(nsm_response, ephemeral_public_key)| {
-				ProtocolMsg::BootKeyForwardResponse {
-					nsm_response,
-					ephemeral_public_key,
-				}
-			})
-			.map_err(ProtocolMsg::ProtocolErrorResponse);
+			let result = key::boot_key_forward(state, manifest_envelope, pivot)
+				.map(|(nsm_response, ephemeral_public_key)| {
+					ProtocolMsg::BootKeyForwardResponse {
+						nsm_response,
+						ephemeral_public_key,
+					}
+				})
+				.map_err(ProtocolMsg::ProtocolErrorResponse);
 
 			Some(result)
 		} else {
@@ -611,10 +667,78 @@ mod handlers {
 					app_key_attestation_doc: app_key_attestation_doc.clone(),
 				},
 			)
-			.map(|()| ProtocolMsg::InjectKeyResponse)
+			.map(|settled| ProtocolMsg::InjectKeyResponse {
+				awaiting_app_key: settled == Settled::AwaitingAppKey,
+			})
 			.map_err(ProtocolMsg::ProtocolErrorResponse);
 
 			Some(result)
+		} else {
+			None
+		}
+	}
+
+	pub(super) fn mint_app_key(
+		req: &ProtocolMsg,
+		state: &mut ProtocolState,
+	) -> ProtocolRouteResponse {
+		if let ProtocolMsg::MintAppKeyRequest { order_signature } = req {
+			Some(
+				app_key::mint_app_key(state, order_signature)
+					.map(|()| ProtocolMsg::MintAppKeyResponse)
+					.map_err(ProtocolMsg::ProtocolErrorResponse),
+			)
+		} else {
+			None
+		}
+	}
+
+	pub(super) fn inject_app_key(
+		req: &ProtocolMsg,
+		state: &mut ProtocolState,
+	) -> ProtocolRouteResponse {
+		if let ProtocolMsg::InjectAppKeyRequest {
+			encrypted_app_key,
+			app_key_attestation_doc,
+		} = req
+		{
+			Some(
+				app_key::inject_app_key(
+					state,
+					encrypted_app_key,
+					app_key_attestation_doc,
+				)
+				.map(|()| ProtocolMsg::InjectAppKeyResponse)
+				.map_err(ProtocolMsg::ProtocolErrorResponse),
+			)
+		} else {
+			None
+		}
+	}
+
+	pub(super) fn export_app_key(
+		req: &ProtocolMsg,
+		state: &mut ProtocolState,
+	) -> ProtocolRouteResponse {
+		if let ProtocolMsg::ExportAppKeyRequest {
+			cose_sign1_attestation_doc,
+			ephemeral_public_key,
+		} = req
+		{
+			Some(
+				app_key::export_app_key(
+					state,
+					cose_sign1_attestation_doc,
+					ephemeral_public_key,
+				)
+				.map(|(encrypted_app_key, app_key_attestation_doc)| {
+					ProtocolMsg::ExportAppKeyResponse {
+						encrypted_app_key,
+						app_key_attestation_doc,
+					}
+				})
+				.map_err(ProtocolMsg::ProtocolErrorResponse),
+			)
 		} else {
 			None
 		}

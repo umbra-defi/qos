@@ -207,9 +207,6 @@ pub enum ProtocolError {
 	FailedToGetAppKey(HybridError),
 	/// Failed to write the app key.
 	FailedToPutAppKey,
-	/// The forwarded key carried no app key, and this boot was told to
-	/// receive one rather than mint it.
-	AppKeyNotForwarded,
 	/// The forwarded key carried an encrypted app key without the sending
 	/// enclave's attestation, or the reverse.
 	AppKeyTransferIncomplete,
@@ -218,6 +215,17 @@ pub enum ProtocolError {
 	AppKeyTransferNotAttested(String),
 	/// The decrypted app key is not a master seed.
 	InvalidAppKeySecret,
+	/// An app key was forwarded for a manifest that names no app key minter.
+	AppKeyNotExpected,
+	/// A mint order was sent for a manifest that names no app key minter.
+	AppKeyMinterNotNamed,
+	/// The manifest's app key minter is not a hybrid public key.
+	InvalidAppKeyMinter,
+	/// The mint order is not the minter's signature for this manifest and
+	/// this boot's setup ephemeral key.
+	AppKeyMintOrderInvalid,
+	/// No quorum key is held waiting for the app key.
+	MissingPendingQuorumKey,
 }
 
 impl From<std::io::Error> for ProtocolError {
@@ -434,10 +442,6 @@ impl std::fmt::Display for ProtocolError {
 				write!(f, "failed to get the app key: {e:?}")
 			}
 			Self::FailedToPutAppKey => write!(f, "failed to put the app key"),
-			Self::AppKeyNotForwarded => write!(
-				f,
-				"no app key was forwarded and this boot may not mint one"
-			),
 			Self::AppKeyTransferIncomplete => write!(
 				f,
 				"an app key transfer needs both the encrypted key and the sender's attestation"
@@ -447,6 +451,23 @@ impl std::fmt::Display for ProtocolError {
 			}
 			Self::InvalidAppKeySecret => {
 				write!(f, "decrypted app key is not a master seed")
+			}
+			Self::AppKeyNotExpected => write!(
+				f,
+				"an app key was forwarded for a manifest with no app key minter"
+			),
+			Self::AppKeyMinterNotNamed => {
+				write!(f, "the manifest names no app key minter")
+			}
+			Self::InvalidAppKeyMinter => {
+				write!(f, "the manifest's app key minter is not a hybrid key")
+			}
+			Self::AppKeyMintOrderInvalid => write!(
+				f,
+				"the mint order is not the minter's signature for this boot"
+			),
+			Self::MissingPendingQuorumKey => {
+				write!(f, "no quorum key is waiting for the app key")
 			}
 		}
 	}

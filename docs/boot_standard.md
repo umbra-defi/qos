@@ -167,10 +167,11 @@ Node is reachable through `qos_host`.
     1) If fewer than `manifest.share_set.threshold` shares have been posted, return `ProvisionResponse { reconstructed: false }`.
     1) Once `manifest.share_set.threshold` shares have been posted, reconstruct the Quorum Key with Shamir reconstruction. The true cryptographic reconstruction threshold is determined by how the Shamir shares were originally split. `manifest.share_set.threshold` represents the minimum number of Share Set approvals required before the Node attempts reconstruction, so it should be greater than or equal to the Shamir reconstruction threshold.
     1) Check that the reconstructed Quorum Key public key matches `manifest.namespace.quorum_key`. This is the effective cryptographic check for provisioning: if the posted shares cannot reconstruct the intended key, provisioning fails.
+    1) If the manifest names an `appKeyMinter`, keep the Quorum Key in memory, return `ProvisionResponse { reconstructed: true, awaiting_app_key: true }` and wait in `WaitingForAppKey` until the minter's order mints the App Key or an enclave of the manifest forwards it (see [Enclave Keys](enclave_keys.md#app-key)); the steps below run then.
     1) Rotate to the precommitted live Ephemeral Key so app-level uses do not reuse the setup key that protected share provisioning.
-    1) Mint the App Key and write it to the filesystem. The share set picked this Node by posting shares to it, so it is the one Node of the manifest that mints; the others receive the App Key by key forward.
+    1) Write the App Key, if any, to the filesystem.
     1) Write the Quorum Key to the filesystem, at which point the Node will automatically pivot to running the Pivot App.
-    1) Return `ProvisionResponse { reconstructed: true }`.
+    1) Return `ProvisionResponse { reconstructed: true, awaiting_app_key: false }`, or `MintAppKeyResponse` / `InjectAppKeyResponse` when the App Key arrived later.
 
         ```rust
         struct ProvisionResponse {

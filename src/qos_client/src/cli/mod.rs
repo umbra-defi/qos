@@ -14,10 +14,7 @@ use qos_core::{
 	parser::{CommandParser, GetParserForCommand, Parser, Token},
 	protocol::{
 		msg::ProtocolMsg,
-		services::{
-			boot::{self, BridgeConfig},
-			key::AppKeyMode,
-		},
+		services::boot::{self, BridgeConfig},
 	},
 };
 
@@ -35,7 +32,9 @@ const RESTART_POLICY: &str = "restart-policy";
 const PIVOT_PATH: &str = "pivot-path";
 const PIVOT_ARGS: &str = "pivot-args";
 const UNSAFE_SKIP_ATTESTATION: &str = "unsafe-skip-attestation";
-const MINT_APP_KEY: &str = "mint-app-key";
+const APP_KEY_MINTER_PATH: &str = "app-key-minter-path";
+const ORDER_PATH: &str = "order-path";
+const ENCRYPTED_APP_KEY_PATH: &str = "encrypted-app-key-path";
 const UNSAFE_EPH_PATH_OVERRIDE: &str = "unsafe-eph-path-override";
 const ENDPOINT_BASE_PATH: &str = "endpoint-base-path";
 const QOS_REALEASE_DIR: &str = "qos-release-dir";
@@ -216,6 +215,16 @@ pub enum Command {
 	ExportKey,
 	/// Inject a quorum key into a non-fully provisioned enclave
 	InjectKey,
+	/// Sign, with the manifest's app key minter, an order for one waiting
+	/// boot to mint the app key.
+	SignAppKeyMintOrder,
+	/// Send a signed mint order to the boot it names.
+	MintAppKey,
+	/// Ask an enclave holding the app key to seal it to a waiting boot of the
+	/// same manifest.
+	ExportAppKey,
+	/// Send an exported app key to the waiting boot it was sealed to.
+	InjectAppKey,
 	/// Verify a signature from `qos_hybrid` pair.
 	HybridVerify,
 	/// Sign with an ML-DSA-87 + Ed25519 signature from a hybrid master seed.
@@ -256,6 +265,10 @@ impl From<&str> for Command {
 			"boot-key-fwd" => Self::BootKeyFwd,
 			"export-key" => Self::ExportKey,
 			"inject-key" => Self::InjectKey,
+			"sign-app-key-mint-order" => Self::SignAppKeyMintOrder,
+			"mint-app-key" => Self::MintAppKey,
+			"export-app-key" => Self::ExportAppKey,
+			"inject-app-key" => Self::InjectAppKey,
 			"hybrid-verify" => Self::HybridVerify,
 			"hybrid-sign" => Self::HybridSign,
 			"hybrid-asymmetric-encrypt" => Self::HybridAsymmetricEncrypt,
@@ -304,12 +317,26 @@ impl Command {
 		)
 		.takes_value(false)
 	}
-	fn mint_app_key_token() -> Token {
+	fn app_key_minter_path_token() -> Token {
 		Token::new(
-			MINT_APP_KEY,
-			"Mint the app key if the source enclave runs another manifest. Give it to one boot per manifest; every other boot receives the key from an enclave of its own manifest."
+			APP_KEY_MINTER_PATH,
+			"Path to the hex hybrid public key whose signed order makes one boot mint the manifest's app key (manifest v2 only). Without it the manifest has no app key."
 		)
-		.takes_value(false)
+		.takes_value(true)
+		.required(false)
+	}
+	fn order_path_token() -> Token {
+		Token::new(ORDER_PATH, "Path to a hex app key mint order signature.")
+			.takes_value(true)
+			.required(true)
+	}
+	fn encrypted_app_key_path_token() -> Token {
+		Token::new(
+			ENCRYPTED_APP_KEY_PATH,
+			"Path to an app key sealed to a waiting boot, with the sender's attestation.",
+		)
+		.takes_value(true)
+		.required(true)
 	}
 	fn unsafe_eph_path_override_token() -> Token {
 		Token::new(
@@ -718,6 +745,7 @@ impl Command {
 			.token(Self::dns_resolvers_token())
 			.token(Self::debug_mode_token())
 			.token(Self::use_manifest_version_token())
+			.token(Self::app_key_minter_path_token())
 	}
 
 	fn approve_manifest() -> Parser {
@@ -737,6 +765,7 @@ impl Command {
 			.token(Self::manifest_set_dir_token())
 			.token(Self::share_set_dir_token())
 			.token(Self::patch_set_dir_optional_token())
+			.token(Self::app_key_minter_path_token())
 			.token(Self::unsafe_auto_confirm_token())
 	}
 
@@ -857,7 +886,6 @@ impl Command {
 			.token(Self::manifest_envelope_path_token())
 			.token(Self::pivot_path_token())
 			.token(Self::attestation_doc_path_token())
-			.token(Self::mint_app_key_token())
 	}
 
 	fn export_key() -> Parser {
@@ -869,6 +897,28 @@ impl Command {
 
 	fn inject_key() -> Parser {
 		Self::base().token(Self::encrypted_quorum_key_path_token())
+	}
+
+	fn sign_app_key_mint_order() -> Parser {
+		Parser::new()
+			.token(Self::manifest_envelope_path_token())
+			.token(Self::attestation_doc_path_token())
+			.token(Self::master_seed_path_token())
+			.token(Self::order_path_token())
+	}
+
+	fn mint_app_key() -> Parser {
+		Self::base().token(Self::order_path_token())
+	}
+
+	fn export_app_key() -> Parser {
+		Self::base()
+			.token(Self::attestation_doc_path_token())
+			.token(Self::encrypted_app_key_path_token())
+	}
+
+	fn inject_app_key() -> Parser {
+		Self::base().token(Self::encrypted_app_key_path_token())
 	}
 
 	fn hybrid_verify() -> Parser {
@@ -933,6 +983,10 @@ impl GetParserForCommand for Command {
 			Self::BootKeyFwd => Self::boot_key_fwd(),
 			Self::ExportKey => Self::export_key(),
 			Self::InjectKey => Self::inject_key(),
+			Self::SignAppKeyMintOrder => Self::sign_app_key_mint_order(),
+			Self::MintAppKey => Self::mint_app_key(),
+			Self::ExportAppKey => Self::export_app_key(),
+			Self::InjectAppKey => Self::inject_app_key(),
 			Self::HybridVerify => Self::hybrid_verify(),
 			Self::HybridSign => Self::hybrid_sign(),
 			Self::HybridAsymmetricEncrypt => Self::hybrid_asymmetric_encrypt(),
@@ -1322,12 +1376,19 @@ impl ClientOpts {
 		self.parsed.flag(YUBIKEY).unwrap_or(false)
 	}
 
-	fn app_key_mode(&self) -> AppKeyMode {
-		if self.parsed.flag(MINT_APP_KEY).unwrap_or(false) {
-			AppKeyMode::Mint
-		} else {
-			AppKeyMode::Receive
-		}
+	fn app_key_minter_path(&self) -> Option<String> {
+		self.parsed.single(APP_KEY_MINTER_PATH).cloned()
+	}
+
+	fn order_path(&self) -> String {
+		self.parsed.single(ORDER_PATH).expect("Missing `--order-path`").clone()
+	}
+
+	fn encrypted_app_key_path(&self) -> String {
+		self.parsed
+			.single(ENCRYPTED_APP_KEY_PATH)
+			.expect("Missing `--encrypted-app-key-path`")
+			.clone()
 	}
 
 	fn unsafe_skip_attestation(&self) -> bool {
@@ -1439,6 +1500,12 @@ impl ClientRunner {
 				Command::BootKeyFwd => handlers::boot_key_fwd(&self.opts),
 				Command::ExportKey => handlers::export_key(&self.opts),
 				Command::InjectKey => handlers::inject_key(&self.opts),
+				Command::SignAppKeyMintOrder => {
+					handlers::sign_app_key_mint_order(&self.opts);
+				}
+				Command::MintAppKey => handlers::mint_app_key(&self.opts),
+				Command::ExportAppKey => handlers::export_app_key(&self.opts),
+				Command::InjectAppKey => handlers::inject_app_key(&self.opts),
 				Command::HybridVerify => handlers::hybrid_verify(&self.opts),
 				Command::HybridSign => handlers::hybrid_sign(&self.opts),
 				Command::HybridAsymmetricEncrypt => {
@@ -1633,6 +1700,7 @@ mod handlers {
 			bridge_config: opts.bridge_config(),
 			dns_resolvers: opts.dns_resolvers(),
 			debug_mode: opts.debug_mode(),
+			app_key_minter_path: opts.app_key_minter_path(),
 		};
 		let result = match opts.use_manifest_version() {
 			1 => services::generate_manifest(args),
@@ -1664,6 +1732,7 @@ mod handlers {
 			manifest_set_dir: opts.manifest_set_dir(),
 			share_set_dir: opts.share_set_dir(),
 			patch_set_dir: opts.patch_set_dir(),
+			app_key_minter_path: opts.app_key_minter_path(),
 			alias: opts.alias(),
 			unsafe_auto_confirm: opts.unsafe_auto_confirm(),
 		}) {
@@ -1819,7 +1888,6 @@ mod handlers {
 			opts.manifest_envelope_path(),
 			opts.pivot_path(),
 			opts.attestation_doc_path(),
-			opts.app_key_mode(),
 		) {
 			println!("Error: {e:?}");
 			std::process::exit(1);
@@ -1842,6 +1910,48 @@ mod handlers {
 		if let Err(e) = services::inject_key(
 			&opts.path_message(),
 			opts.encrypted_quorum_key_path(),
+		) {
+			println!("Error: {e:?}");
+			std::process::exit(1);
+		}
+	}
+
+	pub(super) fn sign_app_key_mint_order(opts: &ClientOpts) {
+		if let Err(e) = services::sign_app_key_mint_order(
+			opts.manifest_envelope_path(),
+			opts.attestation_doc_path(),
+			opts.master_seed_path(),
+			opts.order_path(),
+		) {
+			println!("Error: {e:?}");
+			std::process::exit(1);
+		}
+	}
+
+	pub(super) fn mint_app_key(opts: &ClientOpts) {
+		if let Err(e) =
+			services::mint_app_key(&opts.path_message(), opts.order_path())
+		{
+			println!("Error: {e:?}");
+			std::process::exit(1);
+		}
+	}
+
+	pub(super) fn export_app_key(opts: &ClientOpts) {
+		if let Err(e) = services::export_app_key(
+			&opts.path_message(),
+			opts.attestation_doc_path(),
+			opts.encrypted_app_key_path(),
+		) {
+			println!("Error: {e:?}");
+			std::process::exit(1);
+		}
+	}
+
+	pub(super) fn inject_app_key(opts: &ClientOpts) {
+		if let Err(e) = services::inject_app_key(
+			&opts.path_message(),
+			opts.encrypted_app_key_path(),
 		) {
 			println!("Error: {e:?}");
 			std::process::exit(1);

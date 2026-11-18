@@ -83,22 +83,36 @@ instances, restarts, horizontal scaling, and application upgrades. Common uses:
 ## App Key
 
 The App Key is shared by every enclave that boots one manifest, and exists only
-inside those enclaves:
+inside those enclaves. A v2 manifest opts in by naming an `appKeyMinter`, a
+hybrid public key; a manifest that names none has no App Key and pivots as soon
+as it holds its Quorum Key. Manifest Set members vouch for the minter as for
+every other key: `approve-manifest --app-key-minter-path` refuses a manifest
+whose minter differs from the one they hold.
 
-- one boot per manifest mints it: the boot the share set provisions, or a
-  key-forward boot the host sends with `app_key_mode: Mint`;
-- every other boot of the manifest receives it by key forward from an enclave of
-  the same manifest, sealed to its setup Ephemeral Key and attested by the
-  sender (see [Key Forward](key_forward.md));
-- it is never split into shares or wrapped to the disaster-recovery key, so no
+- A boot of such a manifest that has its Quorum Key but no App Key keeps the
+  Quorum Key in memory, unwritten, and waits in `WaitingForAppKey`. That happens
+  after shares are posted, and after a key forward from an enclave of another
+  manifest.
+- The minter orders exactly one waiting boot to mint: it signs
+  `"qos_app_key_mint_order_v1" || manifest_hash || setup_ephemeral_binding`
+  (`qos_client sign-app-key-mint-order`), and the boot checks the signature
+  against the manifest's minter before minting (`mint-app-key`). The order names
+  the boot's setup Ephemeral Key, which is fresh per boot, so it cannot be
+  replayed to another boot; the host cannot mint without the minter.
+- Every other boot of the manifest receives the App Key from an enclave of the
+  same manifest, sealed to its setup Ephemeral Key and attested by the sender:
+  carried with a key forward (see [Key Forward](key_forward.md)), or, for a boot
+  already waiting, through `export-app-key` and `inject-app-key`.
+- A refused order or App Key leaves the boot waiting, so a valid one can follow.
+- It is never split into shares or wrapped to the disaster-recovery key, so no
   share threshold or key holder can rebuild it.
 
 A new manifest gets a new App Key; nothing carries across. When every enclave of
-a manifest is gone, its App Key is gone, and so is anything sealed to it. The
-host chooses which boot mints, so a host can make two boots of one manifest mint
-two keys. Neither leaks, since both exist only in enclaves; whoever consumes the
-App Key decides which one is current, for example by accepting the latest
-attested registration.
+a manifest is gone, its App Key is gone, and so is anything sealed to it; the
+minter then orders a new one. Whoever holds the minter key can order a mint on a
+second boot, giving the manifest two App Keys; neither leaks, since both exist
+only in enclaves, and whoever consumes the App Key decides which one is
+current.
 
 Use the App Key when data should be readable by any enclave of this manifest
 but never outside one. QOS does not attest the App Key itself: a pivot app that

@@ -11,7 +11,6 @@ use crate::protocol::{
 	services::{
 		boot::{Approval, VersionedManifestEnvelope},
 		genesis::{GenesisOutput, GenesisSet},
-		key::AppKeyMode,
 	},
 };
 
@@ -156,6 +155,10 @@ pub enum ProtocolMsg {
 		/// If the Quorum key was reconstructed. False indicates still waiting
 		/// for the Kth share.
 		reconstructed: bool,
+		/// The Quorum Key is held, unwritten, until the app key is minted or
+		/// forwarded (see [`Self::MintAppKeyRequest`]).
+		#[serde(default)]
+		awaiting_app_key: bool,
 	},
 
 	/// Proxy the encoded `data` to the secure app.
@@ -198,10 +201,6 @@ pub enum ProtocolMsg {
 		/// Pivot binary
 		#[serde(with = "qos_hex::serde")]
 		pivot: Vec<u8>,
-		/// Whether this boot may mint the app key when the forwarded key
-		/// carries none.
-		#[serde(default)]
-		app_key_mode: AppKeyMode,
 	},
 	/// Response to a key forward attestation request
 	BootKeyForwardResponse {
@@ -280,7 +279,12 @@ pub enum ProtocolMsg {
 		app_key_attestation_doc: Option<Vec<u8>>,
 	},
 	/// Successful response to [`Self::InjectKeyRequest`].
-	InjectKeyResponse,
+	InjectKeyResponse {
+		/// The Quorum Key is held, unwritten, until the app key is minted or
+		/// forwarded (see [`Self::MintAppKeyRequest`]).
+		#[serde(default)]
+		awaiting_app_key: bool,
+	},
 
 	/// Fetch the manifest envelope, if it exists.
 	ManifestEnvelopeRequest,
@@ -315,6 +319,51 @@ pub enum ProtocolMsg {
 		/// Pivot binary.
 		pivot: Vec<u8>,
 	},
+
+	/// Mint the app key on an enclave waiting for it, as ordered by the
+	/// manifest's app key minter.
+	MintAppKeyRequest {
+		/// The minter's signature over
+		/// `services::app_key::app_key_mint_order_message` for this manifest
+		/// and the receiving enclave's setup Ephemeral Key.
+		#[serde(with = "qos_hex::serde")]
+		order_signature: Vec<u8>,
+	},
+	/// Successful response to [`Self::MintAppKeyRequest`].
+	MintAppKeyResponse,
+
+	/// Ask an enclave holding the app key to seal it to an enclave of the same
+	/// manifest that is waiting for it.
+	ExportAppKeyRequest {
+		/// Setup attestation document of the waiting enclave.
+		#[serde(with = "qos_hex::serde")]
+		cose_sign1_attestation_doc: Vec<u8>,
+		/// Setup Ephemeral Key of the waiting enclave; its attestation binding
+		/// must equal the attestation's `public_key`.
+		#[serde(with = "qos_hex::serde")]
+		ephemeral_public_key: Vec<u8>,
+	},
+	/// Response to [`Self::ExportAppKeyRequest`].
+	ExportAppKeyResponse {
+		/// The app key encrypted to the waiting enclave's setup Ephemeral Key.
+		#[serde(with = "qos_hex::serde")]
+		encrypted_app_key: Vec<u8>,
+		/// The sender's attestation document binding `encrypted_app_key`.
+		#[serde(with = "qos_hex::serde")]
+		app_key_attestation_doc: Vec<u8>,
+	},
+
+	/// Install the app key an enclave of the same manifest sealed to this one.
+	InjectAppKeyRequest {
+		/// The app key encrypted to this enclave's setup Ephemeral Key.
+		#[serde(with = "qos_hex::serde")]
+		encrypted_app_key: Vec<u8>,
+		/// The sender's attestation document binding `encrypted_app_key`.
+		#[serde(with = "qos_hex::serde")]
+		app_key_attestation_doc: Vec<u8>,
+	},
+	/// Successful response to [`Self::InjectAppKeyRequest`].
+	InjectAppKeyResponse,
 }
 
 impl ProtocolMsg {
@@ -415,6 +464,7 @@ impl ProtocolMsg {
 }
 
 impl std::fmt::Display for ProtocolMsg {
+	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::ProtocolErrorResponse(_) => {
@@ -442,10 +492,11 @@ impl std::fmt::Display for ProtocolMsg {
 			Self::ProvisionRequest { .. } => {
 				write!(f, "ProvisionRequest")
 			}
-			Self::ProvisionResponse { reconstructed } => {
+			Self::ProvisionResponse { reconstructed, awaiting_app_key } => {
 				write!(
 					f,
-					"ProvisionResponse{{ reconstructed: {reconstructed} }}"
+					"ProvisionResponse{{ reconstructed: {reconstructed}, \
+					 awaiting_app_key: {awaiting_app_key} }}"
 				)
 			}
 			Self::ProxyRequest { .. } => {
@@ -491,6 +542,20 @@ impl std::fmt::Display for ProtocolMsg {
 			Self::InjectKeyResponse { .. } => {
 				write!(f, "InjectKeyResponse")
 			}
+			Self::MintAppKeyRequest { .. } => {
+				write!(f, "MintAppKeyRequest")
+			}
+			Self::MintAppKeyResponse => write!(f, "MintAppKeyResponse"),
+			Self::ExportAppKeyRequest { .. } => {
+				write!(f, "ExportAppKeyRequest")
+			}
+			Self::ExportAppKeyResponse { .. } => {
+				write!(f, "ExportAppKeyResponse")
+			}
+			Self::InjectAppKeyRequest { .. } => {
+				write!(f, "InjectAppKeyRequest")
+			}
+			Self::InjectAppKeyResponse => write!(f, "InjectAppKeyResponse"),
 			Self::ManifestEnvelopeRequest { .. } => {
 				write!(f, "ManifestEnvelopeRequest")
 			}
@@ -641,6 +706,7 @@ mod test {
 				qos_commit: "commit".to_string(),
 			},
 			dns: None,
+			app_key_minter: None,
 		};
 		let msg = ProtocolMsg::BootStandardRequest {
 			manifest_envelope: Box::new(VersionedManifestEnvelope::V2(
@@ -690,6 +756,7 @@ mod test {
 					qos_commit: "commit".to_string(),
 				},
 				dns: None,
+				app_key_minter: None,
 			},
 			manifest_set_approvals: vec![],
 			share_set_approvals: vec![],
