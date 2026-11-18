@@ -1,7 +1,9 @@
 //! Decides whether a directory sits on a RAM-backed volume, the only place a
-//! release build of `qos_client` writes a plaintext key: a master seed, a
-//! Shamir share, a reconstructed secret, a decrypted plaintext. It also holds
-//! the `YubiKey` member passphrase file. On macOS a volume counts when `hdiutil`
+//! release build of `qos_client` writes a transient plaintext key: a Shamir
+//! share, a reconstructed secret, a decrypted plaintext. It also holds the
+//! `YubiKey` member passphrase file. A file-held key from `generate-file-key`
+//! is the operator's identity and is written wherever it is asked to be, with
+//! owner-only permissions. On macOS a volume counts when `hdiutil`
 //! reports it as part of a `ram://` disk image, and on Linux when it is tmpfs
 //! or ramfs. A refusal prints how to make one.
 //!

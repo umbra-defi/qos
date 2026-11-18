@@ -358,7 +358,7 @@ pub fn generate_file_key<P: AsRef<Path>>(
 		HybridPair::generate().expect("unable to generate hybrid keypair");
 
 	// Write the personal key secret
-	write_secret_with_msg(
+	write_key_file_with_msg(
 		master_secret_path.as_ref(),
 		&share_key_pair.to_master_seed_hex(),
 		"Master Seed",
@@ -2811,12 +2811,20 @@ fn write_with_msg(path: &Path, buf: &[u8], item_name: &str) {
 }
 
 fn write_secret_with_msg(path: &Path, buf: &[u8], item_name: &str) {
+	if let Err(refusal) = crate::ram_volume::admit_file(path) {
+		let path_str = path.as_os_str().to_string_lossy();
+		panic!("Refusing to write {item_name} to {path_str}: {refusal}");
+	}
+	write_key_file_with_msg(path, buf, item_name);
+}
+
+/// Write `buf` to `path` readable by its owner only, wherever `path` is: for
+/// a file-held key meant to outlive the session, such as an operator's
+/// identity seed.
+fn write_key_file_with_msg(path: &Path, buf: &[u8], item_name: &str) {
 	use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
 	let path_str = path.as_os_str().to_string_lossy();
-	if let Err(refusal) = crate::ram_volume::admit_file(path) {
-		panic!("Refusing to write {item_name} to {path_str}: {refusal}");
-	}
 	fs::OpenOptions::new()
 		.write(true)
 		.create(true)
