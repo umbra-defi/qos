@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0](https://github.com/umbra-defi/qos/compare/qos_core-v0.16.2...v0.17.0) - 2026-11-19
+
+The first release of the umbra-defi/qos fork, from tkhq/qos 0.16.2. Every crate is published as
+`umbra_qos_*` and takes this version.
+
+### Breaking
+- Quorum, ephemeral and operator keys are hybrid post-quantum keys (`qos_hybrid`): ML-KEM-1024 +
+  X25519 encryption and ML-DSA-87 + Ed25519 signatures, both halves required. P-256 keys and
+  `qos_p256` are removed.
+- Attestations carry the ephemeral key's 64-byte attestation binding in `public_key`, not the key.
+- YubiKey member keys derive from the OTP slot and a passphrase (Argon2id).
+
+### Added
+- A per-manifest app key, shared by every enclave of one manifest and never outside one, minted
+  only on the order of the manifest's `appKeyMinter` and forwarded enclave to enclave.
+- `noQuorumKey` v2 manifests, which boot on manifest approval alone with no quorum key, shares or
+  key forward (phase `BootedWithoutQuorumKey`); `generate-manifest` and `approve-manifest` take
+  `--no-quorum-key`.
+- Fuzz targets and a spec for `qos_hybrid`.
+
+### Changed
+- Release builds of `qos_client` write shares, reconstructed secrets, decrypted plaintexts and
+  passphrase files only to a RAM-backed volume; `generate-file-key` writes a file-held identity
+  seed wherever asked, owner-only.
+
+### Fixed
+- `qos_host` enclave-info reports the full ephemeral key.
+- The `qos_client` image builds with `CARGOFLAGS` and tracks `qos_hybrid`.
+
 ## `qos_client` - [0.16.2](https://github.com/tkhq/qos/compare/qos_client-v0.16.1...qos_client-v0.16.2) - 2026-11-13
 
 ### Other
