@@ -171,6 +171,24 @@ fn write_resolv_conf(resolvers: &[IpAddr]) -> std::io::Result<()> {
 	fs::write(RESOLV_CONF_PATH, resolv_conf_with_nameservers(resolvers))
 }
 
+/// Whether the files the pivot starts on are all written. The protocol writes
+/// last the quorum key, or, for a manifest that boots without one, the app
+/// key, or with no app key either, the manifest.
+fn ready_to_pivot(handles: &Handles) -> bool {
+	if !handles.pivot_exists() || !handles.manifest_envelope_exists() {
+		return false;
+	}
+	if handles.quorum_key_exists() {
+		return true;
+	}
+	match handles.get_manifest_envelope() {
+		Ok(envelope) if envelope.no_quorum_key() => {
+			envelope.app_key_minter().is_none() || handles.app_key_exists()
+		}
+		_ => false,
+	}
+}
+
 /// Primary entry point for running the enclave. Coordinates spawning the server
 /// and pivot binary.
 pub struct Reaper;
@@ -210,10 +228,7 @@ impl Reaper {
 				std::process::exit(1);
 			}
 
-			if handles.quorum_key_exists()
-				&& handles.pivot_exists()
-				&& handles.manifest_envelope_exists()
-			{
+			if ready_to_pivot(handles) {
 				// The state required to pivot exists, so we can break this
 				// holding pattern and start the pivot.
 				break;
@@ -317,6 +332,106 @@ mod tests {
 	#[test]
 	fn resolv_conf_write_supports_empty_resolver_list() {
 		assert_eq!(resolv_conf_with_nameservers(&[]), "");
+	}
+
+	mod ready_to_pivot {
+		use qos_hybrid::HybridPair;
+		use qos_test_primitives::PathWrapper;
+
+		use super::super::ready_to_pivot;
+		use crate::{
+			handles::Handles,
+			protocol::services::boot::{
+				ManifestBuilder, ManifestSet, Namespace, NitroConfig, ShareSet,
+				VersionedManifest, VersionedManifestEnvelope,
+				manifest::v2::ManifestEnvelopeV2,
+			},
+		};
+
+		/// Handles over files under `name`, removed on drop, holding a pivot
+		/// and a v2 manifest that boots without a quorum key when
+		/// `no_quorum_key`, naming an app key minter when `minter`.
+		fn booted(
+			name: &str,
+			no_quorum_key: bool,
+			minter: bool,
+		) -> (Handles, Vec<PathWrapper<String>>) {
+			let path = |file: &str| {
+				PathWrapper::from(format!("/tmp/ready_to_pivot_{name}.{file}"))
+			};
+			let files = vec![
+				path("eph"),
+				path("quorum"),
+				path("app"),
+				path("manifest"),
+				path("pivot"),
+			];
+			let handles = Handles::new(
+				files[0].display().to_string(),
+				files[1].display().to_string(),
+				files[2].display().to_string(),
+				files[3].display().to_string(),
+				files[4].display().to_string(),
+			);
+			let builder = ManifestBuilder::v2()
+				.namespace(Namespace {
+					name: name.to_string(),
+					nonce: 1,
+					quorum_key: Vec::new(),
+				})
+				.pivot_hash([0; 32])
+				.manifest_set(ManifestSet::default())
+				.share_set(ShareSet { threshold: 0, members: Vec::new() })
+				.enclave(NitroConfig::default());
+			let builder = if minter {
+				builder.app_key_minter(
+					HybridPair::generate().unwrap().public_key().to_bytes(),
+				)
+			} else {
+				builder
+			};
+			let builder =
+				if no_quorum_key { builder.no_quorum_key() } else { builder };
+			let VersionedManifest::V2(manifest) = builder.build().unwrap()
+			else {
+				unreachable!("ManifestBuilder::v2 builds v2");
+			};
+			handles.put_pivot(b"pivot").unwrap();
+			handles
+				.put_manifest_envelope(VersionedManifestEnvelope::V2(
+					ManifestEnvelopeV2 {
+						manifest,
+						manifest_set_approvals: Vec::new(),
+						share_set_approvals: Vec::new(),
+					},
+				))
+				.unwrap();
+			(handles, files)
+		}
+
+		#[test]
+		fn a_manifest_with_a_quorum_key_waits_for_it() {
+			let (handles, _files) = booted("with_quorum", false, false);
+			assert!(!ready_to_pivot(&handles));
+
+			handles.put_quorum_key(&HybridPair::generate().unwrap()).unwrap();
+			assert!(ready_to_pivot(&handles));
+		}
+
+		#[test]
+		fn a_manifest_without_a_quorum_key_or_minter_starts_at_once() {
+			let (handles, _files) = booted("no_quorum", true, false);
+			assert!(ready_to_pivot(&handles));
+		}
+
+		#[test]
+		fn a_manifest_without_a_quorum_key_waits_for_its_app_key() {
+			let (handles, _files) = booted("no_quorum_minter", true, true);
+			assert!(!ready_to_pivot(&handles));
+
+			handles.put_app_key(&HybridPair::generate().unwrap()).unwrap();
+			assert!(ready_to_pivot(&handles));
+		}
 	}
 }
 

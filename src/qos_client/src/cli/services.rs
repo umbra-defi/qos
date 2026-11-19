@@ -151,6 +151,14 @@ pub enum Error {
 	ManifestV1DoesNotSupportDnsConfig,
 	/// v1/v0 manifests cannot name an app key minter.
 	ManifestV1DoesNotSupportAppKeyMinter,
+	/// v1/v0 manifests cannot boot without a quorum key.
+	ManifestV1DoesNotSupportNoQuorumKey,
+	/// A manifest that boots without a quorum key was given a quorum key or a
+	/// share set.
+	NoQuorumKeyTakesNoQuorumKeyOrShareSet,
+	/// A manifest with a quorum key needs both its quorum key and its share
+	/// set.
+	MissingQuorumKeyOrShareSet,
 	/// The manifest names no app key minter, so it has no app key to mint.
 	ManifestNamesNoAppKeyMinter,
 	/// The master seed is not the manifest's app key minter.
@@ -716,16 +724,39 @@ pub(crate) struct GenerateManifestArgs<P: AsRef<Path>> {
 	pub pivot_hash_path: P,
 	pub qos_release_dir_path: P,
 	pub pcr3_preimage_path: P,
-	pub share_set_dir: P,
+	pub share_set_dir: Option<P>,
 	pub manifest_set_dir: P,
 	pub patch_set_dir: Option<P>,
-	pub quorum_key_path: P,
+	pub quorum_key_path: Option<P>,
 	pub manifest_path: P,
 	pub pivot_args: Vec<String>,
 	pub bridge_config: Vec<BridgeConfig>,
 	pub dns_resolvers: Option<Vec<IpAddr>>,
 	pub debug_mode: bool,
 	pub app_key_minter_path: Option<P>,
+	pub no_quorum_key: bool,
+}
+
+/// The namespace quorum key and the share set a manifest names: both from
+/// their files, or, for a manifest that boots without a quorum key, none and
+/// an empty set.
+fn quorum_key_and_share_set<P: AsRef<Path>>(
+	no_quorum_key: bool,
+	quorum_key_path: Option<P>,
+	share_set_dir: Option<P>,
+) -> Result<(Vec<u8>, ShareSet), Error> {
+	match (no_quorum_key, quorum_key_path, share_set_dir) {
+		(true, None, None) => {
+			Ok((Vec::new(), ShareSet { threshold: 0, members: Vec::new() }))
+		}
+		(true, _, _) => Err(Error::NoQuorumKeyTakesNoQuorumKeyOrShareSet),
+		(false, Some(quorum_key_path), Some(share_set_dir)) => {
+			let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
+				.map_err(Error::FailedToReadQuorumPublicKey)?;
+			Ok((quorum_key.to_bytes(), get_share_set(share_set_dir)))
+		}
+		(false, _, _) => Err(Error::MissingQuorumKeyOrShareSet),
+	}
 }
 
 pub(crate) fn generate_manifest<P: AsRef<Path>>(
@@ -748,10 +779,14 @@ pub(crate) fn generate_manifest<P: AsRef<Path>>(
 		dns_resolvers,
 		debug_mode,
 		app_key_minter_path,
+		no_quorum_key,
 	} = args;
 
 	if app_key_minter_path.is_some() {
 		return Err(Error::ManifestV1DoesNotSupportAppKeyMinter);
+	}
+	if no_quorum_key {
+		return Err(Error::ManifestV1DoesNotSupportNoQuorumKey);
 	}
 	if dns_resolvers.is_some() {
 		return Err(Error::ManifestV1DoesNotSupportDnsConfig);
@@ -763,23 +798,16 @@ pub(crate) fn generate_manifest<P: AsRef<Path>>(
 
 	// Get manifest set keys & threshold
 	let manifest_set = get_manifest_set(manifest_set_dir);
-	// Get share set keys & threshold
-	let share_set = get_share_set(share_set_dir);
 	let Some(patch_set_dir) = patch_set_dir else {
 		return Err(Error::ManifestV1RequiresPatchSet);
 	};
 	let patch_set = get_patch_set(patch_set_dir);
-	// Get quorum key from namespaces dir
-	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
-		.map_err(Error::FailedToReadQuorumPublicKey)?;
+	let (quorum_key, share_set) =
+		quorum_key_and_share_set(false, quorum_key_path, share_set_dir)?;
 
 	let manifest = ManifestBuilder::new()
 		.with_version(ManifestVersion::V1)
-		.namespace(Namespace {
-			name: namespace,
-			nonce,
-			quorum_key: quorum_key.to_bytes(),
-		})
+		.namespace(Namespace { name: namespace, nonce, quorum_key })
 		.pivot_hash(pivot_hash.try_into().expect("pivot hash was not 256 bits"))
 		.restart_policy(restart_policy)
 		.pivot_args(pivot_args)
@@ -819,6 +847,7 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 		dns_resolvers,
 		debug_mode,
 		app_key_minter_path,
+		no_quorum_key,
 	} = args;
 
 	if patch_set_dir.is_some() {
@@ -829,17 +858,15 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 		extract_nitro_config(qos_release_dir_path, pcr3_preimage_path);
 	let pivot_hash = extract_pivot_hash(pivot_hash_path);
 	let manifest_set = get_manifest_set(manifest_set_dir);
-	let share_set = get_share_set(share_set_dir);
-	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
-		.map_err(Error::FailedToReadQuorumPublicKey)?;
+	let (quorum_key, share_set) = quorum_key_and_share_set(
+		no_quorum_key,
+		quorum_key_path,
+		share_set_dir,
+	)?;
 
 	let manifest = ManifestBuilder::new()
 		.with_version(ManifestVersion::V2)
-		.namespace(Namespace {
-			name: namespace,
-			nonce,
-			quorum_key: quorum_key.to_bytes(),
-		})
+		.namespace(Namespace { name: namespace, nonce, quorum_key })
 		.pivot_hash(pivot_hash.try_into().expect("pivot hash was not 256 bits"))
 		.restart_policy(restart_policy)
 		.pivot_args(pivot_args)
@@ -857,8 +884,10 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 			HybridPublic::from_hex_file(path.as_ref())?.to_bytes(),
 		),
 		None => manifest,
-	}
-	.build()?;
+	};
+	let manifest =
+		if no_quorum_key { manifest.no_quorum_key() } else { manifest }
+			.build()?;
 
 	write_with_msg(
 		manifest_path.as_ref(),
@@ -893,11 +922,12 @@ pub(crate) struct ApproveManifestArgs<P: AsRef<Path>> {
 	pub qos_release_dir_path: P,
 	pub pcr3_preimage_path: P,
 	pub pivot_hash_path: P,
-	pub quorum_key_path: P,
+	pub quorum_key_path: Option<P>,
 	pub manifest_set_dir: P,
-	pub share_set_dir: P,
+	pub share_set_dir: Option<P>,
 	pub patch_set_dir: Option<P>,
 	pub app_key_minter_path: Option<P>,
+	pub no_quorum_key: bool,
 	pub alias: String,
 	pub unsafe_auto_confirm: bool,
 }
@@ -917,6 +947,7 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 		share_set_dir,
 		patch_set_dir,
 		app_key_minter_path,
+		no_quorum_key,
 		alias,
 		unsafe_auto_confirm,
 	} = args;
@@ -932,8 +963,18 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 		eprintln!("Exiting early without approving manifest");
 		std::process::exit(1);
 	}
-	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
-		.map_err(Error::FailedToReadQuorumPublicKey)?;
+	// Booting without a quorum key is vouched for like the minter: only when
+	// the approver asked for exactly that.
+	if manifest.no_quorum_key() != no_quorum_key {
+		eprintln!("Quorum key mode does not match");
+		eprintln!("Exiting early without approving manifest");
+		std::process::exit(1);
+	}
+	let (quorum_key, share_set) = quorum_key_and_share_set(
+		no_quorum_key,
+		quorum_key_path,
+		share_set_dir,
+	)?;
 	let patch_set = match (&manifest, patch_set_dir) {
 		(VersionedManifest::V2(_), Some(_)) => {
 			return Err(Error::ManifestV2DoesNotSupportPatchSet);
@@ -946,7 +987,7 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 	if !approve_manifest_programmatic_verifications(
 		&manifest,
 		&get_manifest_set(manifest_set_dir),
-		&get_share_set(share_set_dir),
+		&share_set,
 		patch_set.as_ref(),
 		&extract_nitro_config(qos_release_dir_path, pcr3_preimage_path),
 		&extract_pivot_hash(pivot_hash_path),
@@ -1001,7 +1042,7 @@ fn approve_manifest_programmatic_verifications(
 	patch_set: Option<&PatchSet>,
 	nitro_config: &NitroConfig,
 	pivot_hash: &[u8],
-	quorum_key: &HybridPublic,
+	quorum_key: &[u8],
 ) -> bool {
 	// Verify manifest set composition
 	if manifest.manifest_set() != manifest_set {
@@ -1049,7 +1090,7 @@ fn approve_manifest_programmatic_verifications(
 	}
 
 	// Verify the intended Quorum Key is being used
-	if manifest.namespace().quorum_key != quorum_key.to_bytes() {
+	if manifest.namespace().quorum_key != quorum_key {
 		eprintln!("Quorum public key does not match");
 		return false;
 	}
@@ -3040,6 +3081,7 @@ mod tests {
 			enclave: manifest.enclave,
 			dns,
 			app_key_minter: None,
+			no_quorum_key: false,
 		})
 	}
 
@@ -3100,6 +3142,7 @@ mod tests {
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,
+				no_quorum_key: false,
 			},
 			manifest_set_approvals: vec![],
 			share_set_approvals: vec![],
@@ -3109,6 +3152,55 @@ mod tests {
 			super::manifest_envelope_protocol_encodings(&v2_envelope),
 			[ProtocolMsgEncoding::Json]
 		);
+	}
+
+	mod quorum_key_and_share_set {
+		use super::*;
+
+		#[test]
+		fn a_manifest_without_a_quorum_key_names_none_and_an_empty_share_set() {
+			let (quorum_key, share_set) =
+				super::super::quorum_key_and_share_set::<&str>(
+					true, None, None,
+				)
+				.unwrap();
+			assert!(quorum_key.is_empty());
+			assert_eq!(share_set, ShareSet { threshold: 0, members: vec![] });
+		}
+
+		#[test]
+		fn a_manifest_without_a_quorum_key_refuses_one_or_a_share_set() {
+			for (quorum_key_path, share_set_dir) in
+				[(Some("quorum.pub"), None), (None, Some("share-set"))]
+			{
+				assert!(matches!(
+					super::super::quorum_key_and_share_set(
+						true,
+						quorum_key_path,
+						share_set_dir
+					),
+					Err(super::super::Error::NoQuorumKeyTakesNoQuorumKeyOrShareSet)
+				));
+			}
+		}
+
+		#[test]
+		fn a_manifest_with_a_quorum_key_needs_it_and_its_share_set() {
+			for (quorum_key_path, share_set_dir) in [
+				(Some("quorum.pub"), None),
+				(None, Some("share-set")),
+				(None, None),
+			] {
+				assert!(matches!(
+					super::super::quorum_key_and_share_set(
+						false,
+						quorum_key_path,
+						share_set_dir
+					),
+					Err(super::super::Error::MissingQuorumKeyOrShareSet)
+				));
+			}
+		}
 	}
 
 	mod approve_manifest_programmatic_verifications {
@@ -3134,7 +3226,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3161,7 +3253,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3188,7 +3280,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3214,7 +3306,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3240,7 +3332,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3266,7 +3358,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3292,7 +3384,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3318,7 +3410,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3344,7 +3436,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3370,7 +3462,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 
@@ -3396,7 +3488,7 @@ mod tests {
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
-				&quorum_key,
+				&quorum_key.to_bytes(),
 			));
 		}
 	}
@@ -4065,6 +4157,7 @@ mod tests {
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,
+				no_quorum_key: false,
 			};
 			fs::write(&json_path, qos_json::to_vec(&v2).unwrap()).unwrap();
 
@@ -4108,6 +4201,7 @@ mod tests {
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,
+				no_quorum_key: false,
 			};
 			let v2_envelope = ManifestEnvelopeV2 {
 				manifest: v2_manifest,

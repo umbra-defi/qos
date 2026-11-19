@@ -43,6 +43,9 @@ pub enum ManifestBuilderError {
 	/// A v1 manifest cannot name an app key minter.
 	#[error("manifest v1 does not support an app key minter")]
 	V1DoesNotSupportAppKeyMinter,
+	/// A v1 manifest cannot boot without a quorum key.
+	#[error("manifest v1 does not support booting without a quorum key")]
+	V1DoesNotSupportNoQuorumKey,
 }
 
 /// Builds a versioned manifest using either the v1 or v2 schema.
@@ -67,6 +70,7 @@ pub struct ManifestBuilder {
 	patch_set: Option<PatchSet>,
 	dns: Option<DnsConfig>,
 	app_key_minter: Option<Vec<u8>>,
+	no_quorum_key: bool,
 }
 
 impl Default for ManifestBuilder {
@@ -94,6 +98,7 @@ impl ManifestBuilder {
 			patch_set: None,
 			dns: None,
 			app_key_minter: None,
+			no_quorum_key: false,
 		}
 	}
 
@@ -208,6 +213,14 @@ impl ManifestBuilder {
 		self
 	}
 
+	/// Make the manifest boot without a quorum key (v2 only). Its namespace
+	/// must then name no quorum key and its share set must be empty.
+	#[must_use]
+	pub fn no_quorum_key(mut self) -> Self {
+		self.no_quorum_key = true;
+		self
+	}
+
 	/// Build the manifest in its version-preserving wrapper.
 	///
 	/// # Errors
@@ -243,6 +256,11 @@ impl ManifestBuilder {
 				if self.app_key_minter.is_some() {
 					return Err(
 						ManifestBuilderError::V1DoesNotSupportAppKeyMinter,
+					);
+				}
+				if self.no_quorum_key {
+					return Err(
+						ManifestBuilderError::V1DoesNotSupportNoQuorumKey,
 					);
 				}
 				let patch_set = self
@@ -285,6 +303,7 @@ impl ManifestBuilder {
 					enclave,
 					dns: self.dns,
 					app_key_minter: self.app_key_minter,
+					no_quorum_key: self.no_quorum_key,
 				}))
 			}
 		}

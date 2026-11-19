@@ -226,6 +226,13 @@ pub enum ProtocolError {
 	AppKeyMintOrderInvalid,
 	/// No quorum key is held waiting for the app key.
 	MissingPendingQuorumKey,
+	/// A manifest that boots without a quorum key names one in its namespace.
+	NoQuorumKeyManifestNamesQuorumKey,
+	/// A manifest that boots without a quorum key has a share set.
+	NoQuorumKeyManifestHasShareSet,
+	/// A key forward boot was sent a manifest that has no quorum key to
+	/// forward.
+	NoQuorumKeyToForward,
 }
 
 impl From<std::io::Error> for ProtocolError {
@@ -468,6 +475,17 @@ impl std::fmt::Display for ProtocolError {
 			),
 			Self::MissingPendingQuorumKey => {
 				write!(f, "no quorum key is waiting for the app key")
+			}
+			Self::NoQuorumKeyManifestNamesQuorumKey => write!(
+				f,
+				"a manifest that boots without a quorum key names one"
+			),
+			Self::NoQuorumKeyManifestHasShareSet => write!(
+				f,
+				"a manifest that boots without a quorum key has a share set"
+			),
+			Self::NoQuorumKeyToForward => {
+				write!(f, "the manifest has no quorum key to forward")
 			}
 		}
 	}

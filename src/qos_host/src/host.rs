@@ -151,6 +151,7 @@ impl HostServer {
 					| ProtocolPhase::WaitingForForwardedKey
 					| ProtocolPhase::WaitingForAppKey => StatusCode::SERVICE_UNAVAILABLE,
 					ProtocolPhase::QuorumKeyProvisioned
+					| ProtocolPhase::BootedWithoutQuorumKey
 					| ProtocolPhase::GenesisBooted => StatusCode::OK,
 				};
 

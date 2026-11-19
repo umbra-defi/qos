@@ -13,7 +13,9 @@ documentation. For the control-task and app-start mechanics, see
 
 A QOS enclave contains the reaper and the pivot app. The reaper owns the QOS
 control path, writes the boot state files through QOS handles, and starts the
-pivot app only after the manifest, pivot binary, and quorum key are present.
+pivot app only after the manifest, pivot binary, and quorum key are present (for
+a manifest that boots without a quorum key, see
+[Booting Without A Quorum Key](#booting-without-a-quorum-key)).
 
 ```mermaid
 flowchart TB
@@ -53,7 +55,7 @@ finished provisioning key material.
 | `/qos.manifest` | The approved QOS manifest envelope. | Inspect the namespace, nonce, pivot configuration, quorum public key, quorum sets, and enclave PCR configuration. |
 | `/qos.ephemeral.key` | The current enclave Ephemeral Key. | Sign enclave results, create App Proofs, and decrypt data encrypted to this specific enclave. |
 | `/qos.app.key` | The App Key every enclave of this manifest shares. | Receive data any enclave of this manifest may open, such as a transport key clients encrypt to, without that data being recoverable outside an enclave. |
-| `/qos.quorum.key` | The namespace Quorum Key. | Encrypt long-lived state and, when exact enclave attribution is not required, sign long-lived data. |
+| `/qos.quorum.key` | The namespace Quorum Key. Absent when the manifest boots without one. | Encrypt long-lived state and, when exact enclave attribution is not required, sign long-lived data. |
 
 During standard boot and key forwarding, QOS creates both a setup Ephemeral Key
 and a live Ephemeral Key. PCR16 commits the setup key and manifest hash for
@@ -118,6 +120,27 @@ Use the App Key when data should be readable by any enclave of this manifest
 but never outside one. QOS does not attest the App Key itself: a pivot app that
 publishes its public key does so in its own attestation request, with the key
 or its digest in `user_data`, while PCR17 and PCR18 bind the manifest.
+
+## Booting Without A Quorum Key
+
+A v2 manifest with `noQuorumKey: true` boots once its Manifest Set approves,
+with no shares, no key forward and no `/qos.quorum.key`. It suits enclaves that
+hold no long-lived secret, such as stateless compute: an approved manifest can
+boot any number of instances, including from zero, with no operator present.
+`generate-manifest --no-quorum-key` builds one, and `approve-manifest` refuses
+a manifest unless its own `--no-quorum-key` flag matches it.
+
+- Its namespace names no Quorum Key and its Share Set is empty (threshold 0, no
+  members); the enclave refuses the boot otherwise. Key forward refuses it too.
+- With no App Key minter, the enclave writes the live Ephemeral Key at boot and
+  starts the pivot app once the manifest is written. Its phase is
+  `BootedWithoutQuorumKey`.
+- With a minter, it waits in `WaitingForAppKey`, gets the App Key as described
+  above, rotates to the live key, writes `/qos.app.key`, and starts the pivot
+  app. A running enclave hands the App Key to later boots of the manifest.
+- Nothing ties enclaves to one identity across manifests or restarts. Clients
+  must check PCR0-2 and PCR18 and the attested Ephemeral Key, and pin PCR3 if
+  the same image booted in another AWS account must not be accepted.
 
 ## Ephemeral Key
 

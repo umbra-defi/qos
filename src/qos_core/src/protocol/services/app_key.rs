@@ -14,6 +14,10 @@
 //!
 //! A manifest that names no minter has no app key and pivots as soon as it has
 //! its quorum key.
+//!
+//! A manifest that boots without a quorum key and names a minter waits the
+//! same way straight after its manifest is approved, and pivots once it holds
+//! the app key.
 
 use qos_hybrid::{HybridPair, HybridPublic};
 use qos_nsm::{
@@ -113,14 +117,14 @@ pub(in crate::protocol) fn settle_quorum_key(
 
 	match (names_minter, forwarded) {
 		(false, None) => {
-			finish(state, &quorum_pair, None)?;
+			finish(state, Some(&quorum_pair), None)?;
 			Ok(Settled::Pivoting)
 		}
 		(false, Some(_)) => Err(ProtocolError::AppKeyNotExpected),
 		(true, Some((encrypted_app_key, attestation_doc))) => {
 			let app_key =
 				receive_app_key(state, &encrypted_app_key, &attestation_doc)?;
-			finish(state, &quorum_pair, Some(&app_key))?;
+			finish(state, Some(&quorum_pair), Some(&app_key))?;
 			Ok(Settled::Pivoting)
 		}
 		(true, None) => {
@@ -158,8 +162,8 @@ pub(in crate::protocol) fn mint_app_key(
 		)
 		.map_err(|_| ProtocolError::AppKeyMintOrderInvalid)?;
 
-	let quorum_pair = state.take_pending_quorum_key()?;
-	finish(state, &quorum_pair, Some(&HybridPair::generate()?))
+	let quorum_pair = take_quorum_key(state, manifest.no_quorum_key())?;
+	finish(state, quorum_pair.as_ref(), Some(&HybridPair::generate()?))
 }
 
 /// Install the app key an attested enclave of this manifest sealed to this
@@ -176,8 +180,22 @@ pub(in crate::protocol) fn inject_app_key(
 	attestation_doc: &[u8],
 ) -> Result<(), ProtocolError> {
 	let app_key = receive_app_key(state, encrypted_app_key, attestation_doc)?;
-	let quorum_pair = state.take_pending_quorum_key()?;
-	finish(state, &quorum_pair, Some(&app_key))
+	let no_quorum_key = state.handles.get_manifest_envelope()?.no_quorum_key();
+	let quorum_pair = take_quorum_key(state, no_quorum_key)?;
+	finish(state, quorum_pair.as_ref(), Some(&app_key))
+}
+
+/// The quorum key held waiting for the app key, or none for a manifest that
+/// boots without one.
+fn take_quorum_key(
+	state: &mut ProtocolState,
+	no_quorum_key: bool,
+) -> Result<Option<HybridPair>, ProtocolError> {
+	if no_quorum_key {
+		Ok(None)
+	} else {
+		state.take_pending_quorum_key().map(Some)
+	}
 }
 
 /// Seal this enclave's app key to a boot of the same manifest that is waiting
@@ -294,10 +312,11 @@ fn receive_app_key(
 }
 
 /// Rotate to the live ephemeral key, then write the app key, if any, and the
-/// quorum key, whose file starts the pivot (see `reaper.rs`).
+/// quorum key, if any. The last file written starts the pivot (see
+/// `reaper.rs`).
 fn finish(
 	state: &mut ProtocolState,
-	quorum_pair: &HybridPair,
+	quorum_pair: Option<&HybridPair>,
 	app_key: Option<&HybridPair>,
 ) -> Result<(), ProtocolError> {
 	// The setup ephemeral key protected key delivery; apps get the live one.
@@ -307,7 +326,10 @@ fn finish(
 	if let Some(app_key) = app_key {
 		state.handles.put_app_key(app_key)?;
 	}
-	state.handles.put_quorum_key(quorum_pair)
+	match quorum_pair {
+		Some(quorum_pair) => state.handles.put_quorum_key(quorum_pair),
+		None => Ok(()),
+	}
 }
 
 #[cfg(test)]
@@ -328,11 +350,11 @@ mod test {
 		handles::Handles,
 		protocol::{
 			ProtocolError, ProtocolPhase, ProtocolState,
-			msg::ProtocolMsg,
+			msg::{JsonBytes, ProtocolMsg},
 			services::{
 				app_key::{export_app_key, inject_app_key, mint_app_key},
 				boot::{
-					Approval, NitroConfig, PivotEnv,
+					Approval, NitroConfig, PivotEnv, ShareSet,
 					manifest::{
 						ManifestVersion, VersionedManifestEnvelope,
 						v2::{ManifestEnvelopeV2, ManifestV2, PivotConfigV2},
@@ -372,7 +394,16 @@ mod test {
 			enclave: v1.enclave.clone(),
 			dns: None,
 			app_key_minter: minter.map(|m| m.public_key().to_bytes()),
+			no_quorum_key: false,
 		};
+		approved(args, manifest)
+	}
+
+	/// `manifest` as a v2 envelope approved by two members.
+	fn approved(
+		args: &TestArgs,
+		manifest: ManifestV2,
+	) -> VersionedManifestEnvelope {
 		let unsigned = VersionedManifestEnvelope::V2(ManifestEnvelopeV2 {
 			manifest: manifest.clone(),
 			manifest_set_approvals: vec![],
@@ -871,5 +902,201 @@ mod test {
 			ProtocolPhase::QuorumKeyProvisioned
 		);
 		assert!(receiver.state.handles.quorum_key_exists());
+	}
+
+	/// [`v2_envelope`] made to boot without a quorum key: no quorum key in the
+	/// namespace and an empty share set.
+	fn no_quorum_key_envelope(
+		args: &TestArgs,
+		minter: Option<&HybridPair>,
+		nonce: u32,
+	) -> VersionedManifestEnvelope {
+		let VersionedManifestEnvelope::V2(envelope) =
+			v2_envelope(args, minter, nonce)
+		else {
+			unreachable!("v2_envelope builds v2");
+		};
+		let mut manifest = envelope.manifest;
+		manifest.namespace.quorum_key = Vec::new();
+		manifest.share_set = ShareSet { threshold: 0, members: Vec::new() };
+		manifest.no_quorum_key = true;
+		approved(args, manifest)
+	}
+
+	/// A fresh enclave waiting for its boot instruction, with files under
+	/// `name`.
+	fn unbooted(name: &str) -> Enclave {
+		let path = |file: &str| {
+			PathWrapper::from(format!("/tmp/app_key_{name}.{file}"))
+		};
+		let files = vec![
+			path("eph.secret"),
+			path("quorum.secret"),
+			path("app.secret"),
+			path("manifest"),
+			path("pivot"),
+		];
+		let handles = Handles::new(
+			files[0].display().to_string(),
+			files[1].display().to_string(),
+			files[2].display().to_string(),
+			files[3].display().to_string(),
+			files[4].display().to_string(),
+		);
+		let state = ProtocolState::new(Box::new(MockNsm::new()), handles, None);
+		Enclave { state, _files: files }
+	}
+
+	/// Boot `envelope` on `enclave`, returning the setup ephemeral key the
+	/// boot answered with.
+	fn boot(
+		enclave: &mut Enclave,
+		envelope: &VersionedManifestEnvelope,
+		pivot: &[u8],
+	) -> Result<Vec<u8>, ProtocolMsg> {
+		match enclave.state.handle_msg_response(
+			&ProtocolMsg::BootStandardJsonEnvelopeRequest {
+				manifest_envelope: Box::new(JsonBytes::new(envelope.clone())),
+				pivot: pivot.to_vec(),
+			},
+		) {
+			ProtocolMsg::BootStandardResponse {
+				ephemeral_public_key, ..
+			} => Ok(ephemeral_public_key),
+			other => Err(other),
+		}
+	}
+
+	#[test]
+	fn a_manifest_without_a_quorum_key_runs_once_approved() {
+		let args = get_test_args();
+		let envelope = no_quorum_key_envelope(&args, None, 2);
+		let mut booted = unbooted("no_quorum_runs");
+
+		let setup_key = boot(&mut booted, &envelope, &args.pivot).unwrap();
+
+		assert_eq!(
+			booted.state.get_phase(),
+			ProtocolPhase::BootedWithoutQuorumKey
+		);
+		assert!(!booted.state.handles.quorum_key_exists());
+		assert!(!booted.state.handles.app_key_exists());
+		assert_ne!(
+			booted
+				.state
+				.handles
+				.get_ephemeral_key()
+				.unwrap()
+				.public_key()
+				.to_bytes(),
+			setup_key,
+			"the pivot starts on the live ephemeral key, not the setup key"
+		);
+		assert_ne!(
+			booted.state.handle_msg_response(
+				&ProtocolMsg::ExportAppKeyRequest {
+					cose_sign1_attestation_doc: vec![],
+					ephemeral_public_key: vec![],
+				}
+			),
+			ProtocolMsg::ProtocolErrorResponse(ProtocolError::NoMatchingRoute(
+				ProtocolPhase::BootedWithoutQuorumKey
+			)),
+			"a running enclave hands its app key to later replicas"
+		);
+	}
+
+	#[test]
+	fn a_manifest_without_a_quorum_key_runs_once_it_holds_its_app_key() {
+		let args = get_test_args();
+		let minter = HybridPair::generate().unwrap();
+		let envelope = no_quorum_key_envelope(&args, Some(&minter), 2);
+		let mut booted = unbooted("no_quorum_mints");
+
+		let setup_key = boot(&mut booted, &envelope, &args.pivot).unwrap();
+		assert_eq!(booted.state.get_phase(), ProtocolPhase::WaitingForAppKey);
+		let setup_pair = booted.state.handles.get_ephemeral_key().unwrap();
+		assert_eq!(setup_pair.public_key().to_bytes(), setup_key);
+
+		assert_eq!(
+			booted.state.handle_msg_response(&ProtocolMsg::MintAppKeyRequest {
+				order_signature: sign_order(&minter, &envelope, &setup_pair),
+			}),
+			ProtocolMsg::MintAppKeyResponse
+		);
+		assert_eq!(
+			booted.state.get_phase(),
+			ProtocolPhase::BootedWithoutQuorumKey
+		);
+		assert!(booted.state.handles.app_key_exists());
+		assert!(!booted.state.handles.quorum_key_exists());
+		assert_ne!(
+			booted
+				.state
+				.handles
+				.get_ephemeral_key()
+				.unwrap()
+				.public_key()
+				.to_bytes(),
+			setup_key,
+			"the setup ephemeral key is rotated out before the pivot starts"
+		);
+	}
+
+	#[test]
+	fn a_manifest_without_a_quorum_key_names_none_and_has_no_share_set() {
+		let args = get_test_args();
+		let VersionedManifestEnvelope::V2(envelope) =
+			no_quorum_key_envelope(&args, None, 2)
+		else {
+			unreachable!("no_quorum_key_envelope builds v2");
+		};
+
+		let mut names_one = envelope.manifest.clone();
+		names_one.namespace.quorum_key =
+			args.quorum_pair.public_key().to_bytes();
+		assert_eq!(
+			boot(
+				&mut unbooted("no_quorum_names_one"),
+				&approved(&args, names_one),
+				&args.pivot
+			),
+			Err(ProtocolMsg::ProtocolErrorResponse(
+				ProtocolError::NoQuorumKeyManifestNamesQuorumKey
+			))
+		);
+
+		let mut has_share_set = envelope.manifest;
+		has_share_set.share_set =
+			args.manifest_envelope.manifest.share_set.clone();
+		assert_eq!(
+			boot(
+				&mut unbooted("no_quorum_share_set"),
+				&approved(&args, has_share_set),
+				&args.pivot
+			),
+			Err(ProtocolMsg::ProtocolErrorResponse(
+				ProtocolError::NoQuorumKeyManifestHasShareSet
+			))
+		);
+	}
+
+	#[test]
+	fn a_manifest_without_a_quorum_key_is_not_booted_by_key_forward() {
+		let args = get_test_args();
+		let envelope = no_quorum_key_envelope(&args, None, 2);
+		let mut booted = unbooted("no_quorum_forward");
+
+		assert_eq!(
+			booted.state.handle_msg_response(
+				&ProtocolMsg::BootKeyForwardRequest {
+					manifest_envelope: Box::new(envelope),
+					pivot: args.pivot.clone(),
+				}
+			),
+			ProtocolMsg::ProtocolErrorResponse(
+				ProtocolError::NoQuorumKeyToForward
+			)
+		);
 	}
 }

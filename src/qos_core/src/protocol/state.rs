@@ -53,6 +53,12 @@ pub enum ProtocolPhase {
 	/// manifest minter's order or forwarded by an enclave of the manifest.
 	#[serde(rename = "WaitingForAppKey", alias = "waitingForAppKey")]
 	WaitingForAppKey,
+	/// The manifest boots without a quorum key and the pivot has started.
+	#[serde(
+		rename = "BootedWithoutQuorumKey",
+		alias = "bootedWithoutQuorumKey"
+	)]
+	BootedWithoutQuorumKey,
 }
 
 /// Enclave routes
@@ -64,6 +70,8 @@ struct ProtocolRoute {
 	handler: Box<ProtocolRouteHandler>,
 	ok_phase: ProtocolPhase, // the next phase if handler() == Ok
 	err_phase: ProtocolPhase, // the next phase if handler() == Err
+	// Replaces `ok_phase` where the next phase depends on the booted manifest.
+	ok_phase_of: Option<fn(&ProtocolState) -> ProtocolPhase>,
 }
 
 impl ProtocolRoute {
@@ -94,7 +102,9 @@ impl ProtocolRoute {
 					}
 					| ProtocolMsg::InjectKeyResponse { awaiting_app_key: true },
 				) => Some(ProtocolPhase::WaitingForAppKey),
-				Ok(_) => Some(self.ok_phase),
+				Ok(_) => {
+					Some(self.ok_phase_of.map_or(self.ok_phase, |of| of(state)))
+				}
 				Err(_) => Some(self.err_phase),
 			},
 		};
@@ -154,6 +164,7 @@ impl ProtocolRoute {
 			ProtocolPhase::WaitingForQuorumShards,
 			ProtocolPhase::UnrecoverableError,
 		)
+		.with_ok_phase_of(phase_after_boot_standard)
 	}
 
 	pub fn boot_key_forward(_current_phase: ProtocolPhase) -> Self {
@@ -196,6 +207,7 @@ impl ProtocolRoute {
 			ProtocolPhase::QuorumKeyProvisioned,
 			current_phase,
 		)
+		.with_ok_phase_of(phase_after_app_key)
 	}
 
 	pub fn inject_app_key(current_phase: ProtocolPhase) -> Self {
@@ -204,6 +216,7 @@ impl ProtocolRoute {
 			ProtocolPhase::QuorumKeyProvisioned,
 			current_phase,
 		)
+		.with_ok_phase_of(phase_after_app_key)
 	}
 
 	pub fn export_app_key(current_phase: ProtocolPhase) -> Self {
@@ -219,7 +232,42 @@ impl ProtocolRoute {
 		ok_phase: ProtocolPhase,
 		err_phase: ProtocolPhase,
 	) -> Self {
-		ProtocolRoute { handler, ok_phase, err_phase }
+		ProtocolRoute { handler, ok_phase, err_phase, ok_phase_of: None }
+	}
+
+	fn with_ok_phase_of(
+		mut self,
+		ok_phase_of: fn(&ProtocolState) -> ProtocolPhase,
+	) -> Self {
+		self.ok_phase_of = Some(ok_phase_of);
+		self
+	}
+}
+
+/// After an approved standard boot: wait for shares, or, for a manifest that
+/// boots without a quorum key, wait for the app key or run.
+fn phase_after_boot_standard(state: &ProtocolState) -> ProtocolPhase {
+	match state.handles.get_manifest_envelope() {
+		Ok(envelope) if !envelope.no_quorum_key() => {
+			ProtocolPhase::WaitingForQuorumShards
+		}
+		Ok(envelope) if envelope.app_key_minter().is_some() => {
+			ProtocolPhase::WaitingForAppKey
+		}
+		Ok(_) => ProtocolPhase::BootedWithoutQuorumKey,
+		Err(_) => ProtocolPhase::UnrecoverableError,
+	}
+}
+
+/// After the app key arrives: provisioned, or, for a manifest that boots
+/// without a quorum key, running.
+fn phase_after_app_key(state: &ProtocolState) -> ProtocolPhase {
+	match state.handles.get_manifest_envelope() {
+		Ok(envelope) if envelope.no_quorum_key() => {
+			ProtocolPhase::BootedWithoutQuorumKey
+		}
+		Ok(_) => ProtocolPhase::QuorumKeyProvisioned,
+		Err(_) => ProtocolPhase::UnrecoverableError,
 	}
 }
 
@@ -381,6 +429,17 @@ impl ProtocolState {
 					ProtocolRoute::inject_app_key(self.phase),
 				]
 			}
+			ProtocolPhase::BootedWithoutQuorumKey => {
+				vec![
+					// baseline routes
+					ProtocolRoute::status(self.phase),
+					ProtocolRoute::version(self.phase),
+					ProtocolRoute::live_attestation_doc(self.phase),
+					ProtocolRoute::manifest_envelope(self.phase),
+					// phase specific routes
+					ProtocolRoute::export_app_key(self.phase),
+				]
+			}
 		}
 	}
 
@@ -400,6 +459,8 @@ impl ProtocolState {
 				ProtocolPhase::GenesisBooted,
 				ProtocolPhase::WaitingForQuorumShards,
 				ProtocolPhase::WaitingForForwardedKey,
+				ProtocolPhase::WaitingForAppKey,
+				ProtocolPhase::BootedWithoutQuorumKey,
 			],
 			ProtocolPhase::GenesisBooted => {
 				vec![ProtocolPhase::UnrecoverableError]
@@ -425,7 +486,11 @@ impl ProtocolState {
 				vec![
 					ProtocolPhase::UnrecoverableError,
 					ProtocolPhase::QuorumKeyProvisioned,
+					ProtocolPhase::BootedWithoutQuorumKey,
 				]
+			}
+			ProtocolPhase::BootedWithoutQuorumKey => {
+				vec![ProtocolPhase::UnrecoverableError]
 			}
 		};
 
