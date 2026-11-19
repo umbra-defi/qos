@@ -104,6 +104,9 @@ pub(in crate::protocol) fn boot_key_forward(
 	pivot: &[u8],
 ) -> Result<(NsmResponse, Vec<u8>), ProtocolError> {
 	let manifest_envelope = manifest_envelope.into();
+	if manifest_envelope.no_quorum_key() {
+		return Err(ProtocolError::NoQuorumKeyToForward);
+	}
 	put_manifest_and_pivot(state, &manifest_envelope, pivot)
 }
 

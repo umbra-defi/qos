@@ -707,6 +707,7 @@ mod test {
 			},
 			dns: None,
 			app_key_minter: None,
+			no_quorum_key: false,
 		};
 		let msg = ProtocolMsg::BootStandardRequest {
 			manifest_envelope: Box::new(VersionedManifestEnvelope::V2(
@@ -757,6 +758,7 @@ mod test {
 				},
 				dns: None,
 				app_key_minter: None,
+				no_quorum_key: false,
 			},
 			manifest_set_approvals: vec![],
 			share_set_approvals: vec![],

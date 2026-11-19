@@ -187,6 +187,16 @@ impl VersionedManifest {
 		}
 	}
 
+	/// Return whether the manifest boots without a quorum key. Only v2
+	/// manifests can.
+	#[must_use]
+	pub fn no_quorum_key(&self) -> bool {
+		match self {
+			Self::V2(manifest) => manifest.no_quorum_key,
+			Self::V1(_) | Self::V0(_) => false,
+		}
+	}
+
 	/// Return the expected pivot binary hash.
 	#[must_use]
 	pub fn pivot_hash(&self) -> &Hash256 {
@@ -425,6 +435,26 @@ impl VersionedManifestEnvelope {
 		}
 	}
 
+	/// Return the embedded namespace.
+	#[must_use]
+	pub fn namespace(&self) -> &Namespace {
+		match self {
+			Self::V2(envelope) => &envelope.manifest.namespace,
+			Self::V1(envelope) => &envelope.manifest.namespace,
+			Self::V0(envelope) => &envelope.manifest.namespace,
+		}
+	}
+
+	/// Return the embedded share set.
+	#[must_use]
+	pub fn share_set(&self) -> &ShareSet {
+		match self {
+			Self::V2(envelope) => &envelope.manifest.share_set,
+			Self::V1(envelope) => &envelope.manifest.share_set,
+			Self::V0(envelope) => &envelope.manifest.share_set,
+		}
+	}
+
 	/// Return the expected pivot binary hash from the embedded manifest.
 	#[must_use]
 	pub fn pivot_hash(&self) -> &Hash256 {
@@ -452,6 +482,16 @@ impl VersionedManifestEnvelope {
 		match self {
 			Self::V2(e) => e.manifest.app_key_minter.as_deref(),
 			Self::V1(_) | Self::V0(_) => None,
+		}
+	}
+
+	/// Return whether the embedded manifest boots without a quorum key. Only
+	/// v2 manifests can.
+	#[must_use]
+	pub fn no_quorum_key(&self) -> bool {
+		match self {
+			Self::V2(e) => e.manifest.no_quorum_key,
+			Self::V1(_) | Self::V0(_) => false,
 		}
 	}
 
@@ -591,6 +631,7 @@ mod tests {
 			},
 			dns: None,
 			app_key_minter: None,
+			no_quorum_key: false,
 		}
 	}
 
@@ -824,6 +865,28 @@ mod tests {
 		let decoded = VersionedManifest::try_from_slice_compat(&bytes).unwrap();
 		assert!(matches!(decoded, VersionedManifest::V2(_)));
 		assert_eq!(decoded.manifest_hash(), canonical_json_hash(&manifest));
+	}
+
+	#[test]
+	fn v2_manifest_names_no_quorum_key_mode_only_when_set() {
+		let pair = HybridPair::generate().unwrap();
+		let mut manifest = sample_v2_manifest(sample_member(&pair));
+		let with_quorum_key =
+			String::from_utf8(qos_json::to_vec(&manifest).unwrap()).unwrap();
+		assert!(
+			!with_quorum_key.contains("noQuorumKey"),
+			"an existing manifest's JSON, and so its hash, must not change"
+		);
+
+		manifest.no_quorum_key = true;
+		let bytes = qos_json::to_vec(&manifest).unwrap();
+		assert!(
+			String::from_utf8(bytes.clone())
+				.unwrap()
+				.contains("\"noQuorumKey\":true")
+		);
+		let decoded = VersionedManifest::try_from_slice_compat(&bytes).unwrap();
+		assert!(decoded.no_quorum_key());
 	}
 
 	#[test]

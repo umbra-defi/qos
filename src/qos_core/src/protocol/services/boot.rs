@@ -748,6 +748,15 @@ pub(in crate::protocol::services) fn put_manifest_and_pivot(
 		HybridPublic::from_bytes(minter)
 			.map_err(|_| ProtocolError::InvalidAppKeyMinter)?;
 	}
+	if manifest_envelope.no_quorum_key() {
+		if !manifest_envelope.namespace().quorum_key.is_empty() {
+			return Err(ProtocolError::NoQuorumKeyManifestNamesQuorumKey);
+		}
+		let share_set = manifest_envelope.share_set();
+		if share_set.threshold != 0 || !share_set.members.is_empty() {
+			return Err(ProtocolError::NoQuorumKeyManifestHasShareSet);
+		}
+	}
 	let actual_hash = sha_256(pivot);
 	let expected_hash = *manifest_envelope.pivot_hash();
 	if actual_hash != expected_hash {
@@ -776,8 +785,16 @@ pub(in crate::protocol::services) fn put_manifest_and_pivot(
 		&live_ephemeral_binding,
 	)?;
 
-	state.set_pending_live_ephemeral_key(live_ephemeral_key);
-	state.handles.put_ephemeral_key(&setup_ephemeral_key)?;
+	// A boot with nothing to deliver, no quorum key and no app key, starts on
+	// the live key: the manifest file, written last, is what lets it pivot.
+	if manifest_envelope.no_quorum_key()
+		&& manifest_envelope.app_key_minter().is_none()
+	{
+		state.handles.put_ephemeral_key(&live_ephemeral_key)?;
+	} else {
+		state.set_pending_live_ephemeral_key(live_ephemeral_key);
+		state.handles.put_ephemeral_key(&setup_ephemeral_key)?;
+	}
 	state.handles.put_pivot(pivot)?;
 	state.handles.put_manifest_envelope(manifest_envelope)?;
 

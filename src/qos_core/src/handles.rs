@@ -213,6 +213,12 @@ impl Handles {
 		Path::new(&self.quorum.quorum).exists()
 	}
 
+	/// Returns true if the app key file exists.
+	#[must_use]
+	pub fn app_key_exists(&self) -> bool {
+		Path::new(&self.app_key.app_key).exists()
+	}
+
 	/// Get the app key pair.
 	///
 	/// # Errors

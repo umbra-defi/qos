@@ -33,6 +33,7 @@ const PIVOT_PATH: &str = "pivot-path";
 const PIVOT_ARGS: &str = "pivot-args";
 const UNSAFE_SKIP_ATTESTATION: &str = "unsafe-skip-attestation";
 const APP_KEY_MINTER_PATH: &str = "app-key-minter-path";
+const NO_QUORUM_KEY: &str = "no-quorum-key";
 const ORDER_PATH: &str = "order-path";
 const ENCRYPTED_APP_KEY_PATH: &str = "encrypted-app-key-path";
 const UNSAFE_EPH_PATH_OVERRIDE: &str = "unsafe-eph-path-override";
@@ -385,6 +386,27 @@ impl Command {
 		.takes_value(true)
 		.required(true)
 	}
+	fn share_set_dir_optional_token() -> Token {
+		Token::new(
+			SHARE_SET_DIR,
+			"Directory with public keys for members of the share set. Required unless `--no-quorum-key`.",
+		)
+		.takes_value(true)
+	}
+	fn quorum_key_path_optional_token() -> Token {
+		Token::new(
+			QUORUM_KEY_PATH,
+			"The path to the quorum public key. Required unless `--no-quorum-key`.",
+		)
+		.takes_value(true)
+	}
+	fn no_quorum_key_token() -> Token {
+		Token::new(
+			NO_QUORUM_KEY,
+			"The manifest boots without a quorum key: the pivot starts once the manifest set approves, with no shares (manifest v2 only). Takes no `--quorum-key-path` or `--share-set-dir`.",
+		)
+		.takes_value(false)
+	}
 	fn patch_set_dir_optional_token() -> Token {
 		Token::new(
 			PATCH_SET_DIR,
@@ -459,11 +481,6 @@ impl Command {
 	}
 	fn output_path_token() -> Token {
 		Token::new(OUTPUT_PATH, "The path to create a file at.")
-			.takes_value(true)
-			.required(true)
-	}
-	fn quorum_key_path_token() -> Token {
-		Token::new(QUORUM_KEY_PATH, "The path to the quorum public key")
 			.takes_value(true)
 			.required(true)
 	}
@@ -737,9 +754,10 @@ impl Command {
 			.token(Self::pcr3_preimage_path_token())
 			.token(Self::manifest_path_token())
 			.token(Self::manifest_set_dir_token())
-			.token(Self::share_set_dir_token())
+			.token(Self::share_set_dir_optional_token())
 			.token(Self::patch_set_dir_optional_token())
-			.token(Self::quorum_key_path_token())
+			.token(Self::quorum_key_path_optional_token())
+			.token(Self::no_quorum_key_token())
 			.token(Self::pivot_args_token())
 			.token(Self::bridge_config_token())
 			.token(Self::dns_resolvers_token())
@@ -761,11 +779,12 @@ impl Command {
 			.token(Self::pcr3_preimage_path_token())
 			.token(Self::pivot_hash_path_token())
 			.token(Self::alias_token())
-			.token(Self::quorum_key_path_token())
+			.token(Self::quorum_key_path_optional_token())
 			.token(Self::manifest_set_dir_token())
-			.token(Self::share_set_dir_token())
+			.token(Self::share_set_dir_optional_token())
 			.token(Self::patch_set_dir_optional_token())
 			.token(Self::app_key_minter_path_token())
+			.token(Self::no_quorum_key_token())
 			.token(Self::unsafe_auto_confirm_token())
 	}
 
@@ -1066,6 +1085,18 @@ impl ClientOpts {
 			.clone()
 	}
 
+	fn share_set_dir_optional(&self) -> Option<String> {
+		self.parsed.single(SHARE_SET_DIR).cloned()
+	}
+
+	fn quorum_key_path_optional(&self) -> Option<String> {
+		self.parsed.single(QUORUM_KEY_PATH).cloned()
+	}
+
+	fn no_quorum_key(&self) -> bool {
+		self.parsed.flag(NO_QUORUM_KEY).unwrap_or(false)
+	}
+
 	fn patch_set_dir(&self) -> Option<String> {
 		self.parsed.single(PATCH_SET_DIR).map(ToString::to_string)
 	}
@@ -1204,13 +1235,6 @@ impl ClientOpts {
 		self.parsed
 			.single(OUTPUT_PATH)
 			.expect("Missing `--output-path`")
-			.clone()
-	}
-
-	fn quorum_key_path(&self) -> String {
-		self.parsed
-			.single(QUORUM_KEY_PATH)
-			.expect("Missing `--quorum-key-path`")
 			.clone()
 	}
 
@@ -1693,14 +1717,15 @@ mod handlers {
 			pcr3_preimage_path: opts.pcr3_preimage_path(),
 			manifest_path: opts.manifest_path(),
 			pivot_args: opts.pivot_args(),
-			share_set_dir: opts.share_set_dir(),
+			share_set_dir: opts.share_set_dir_optional(),
 			manifest_set_dir: opts.manifest_set_dir(),
 			patch_set_dir: opts.patch_set_dir(),
-			quorum_key_path: opts.quorum_key_path(),
+			quorum_key_path: opts.quorum_key_path_optional(),
 			bridge_config: opts.bridge_config(),
 			dns_resolvers: opts.dns_resolvers(),
 			debug_mode: opts.debug_mode(),
 			app_key_minter_path: opts.app_key_minter_path(),
+			no_quorum_key: opts.no_quorum_key(),
 		};
 		let result = match opts.use_manifest_version() {
 			1 => services::generate_manifest(args),
@@ -1728,11 +1753,12 @@ mod handlers {
 			qos_release_dir_path: opts.qos_release_dir(),
 			pcr3_preimage_path: opts.pcr3_preimage_path(),
 			pivot_hash_path: opts.pivot_hash_path(),
-			quorum_key_path: opts.quorum_key_path(),
+			quorum_key_path: opts.quorum_key_path_optional(),
 			manifest_set_dir: opts.manifest_set_dir(),
-			share_set_dir: opts.share_set_dir(),
+			share_set_dir: opts.share_set_dir_optional(),
 			patch_set_dir: opts.patch_set_dir(),
 			app_key_minter_path: opts.app_key_minter_path(),
+			no_quorum_key: opts.no_quorum_key(),
 			alias: opts.alias(),
 			unsafe_auto_confirm: opts.unsafe_auto_confirm(),
 		}) {

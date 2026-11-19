@@ -70,6 +70,12 @@ pub struct ManifestV2 {
 		with = "qos_hex::serde::option"
 	)]
 	pub app_key_minter: Option<Vec<u8>>,
+	/// Boot without a quorum key: the enclave starts the pivot once the
+	/// manifest set has approved, with no shares and no key forward. The
+	/// namespace then names no quorum key and the share set is empty. Absent,
+	/// the manifest has a quorum key as usual.
+	#[serde(default, skip_serializing_if = "core::ops::Not::not")]
+	pub no_quorum_key: bool,
 }
 
 /// Accept only `"v2"`. [`ManifestVersion`] doubles as the schema selector for
