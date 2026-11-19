@@ -1841,7 +1841,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "umbra_qos_core"
-version = "0.16.2"
+version = "0.17.0"
 dependencies = [
  "aws-nitro-enclaves-nsm-api",
  "borsh",
@@ -1866,7 +1866,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_crypto"
-version = "0.16.2"
+version = "0.17.0"
 dependencies = [
  "rand 0.9.4",
  "sha2",
@@ -1877,14 +1877,14 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_hex"
-version = "0.16.2"
+version = "0.17.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "umbra_qos_hybrid"
-version = "0.16.2"
+version = "0.17.0"
 dependencies = [
  "aes-gcm",
  "borsh",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_json"
-version = "0.16.2"
+version = "0.17.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1912,7 +1912,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_nsm"
-version = "0.16.2"
+version = "0.17.0"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",
