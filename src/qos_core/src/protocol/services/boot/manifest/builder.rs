@@ -10,7 +10,8 @@ use crate::protocol::{
 };
 
 use super::{
-	DnsConfig, ManifestV2, ManifestVersion, ShareSetV2, VersionedManifest,
+	DnsConfig, ManifestSetV2, ManifestV2, ManifestVersion, ShareSetV2,
+	VersionedManifest,
 };
 
 /// An error returned when a required manifest value was not provided.
@@ -52,6 +53,14 @@ pub enum ManifestBuilderError {
 	/// A v1 manifest's share set is flat: it cannot name a holder tree.
 	#[error("manifest v1 does not support a holder tree")]
 	V1DoesNotSupportShareHolders,
+	/// A v1 manifest's manifest set is flat: it cannot name a tree.
+	#[error("manifest v1 does not support a manifest set tree")]
+	V1DoesNotSupportManifestHolders,
+	/// A v2 manifest takes its manifest set either flat or as a tree, not both.
+	#[error(
+		"manifest v2 takes a flat manifest set or manifest holders, not both"
+	)]
+	TwoManifestSets,
 	/// A v2 manifest names a holder tree, not a flat share set.
 	#[error("manifest v2 takes share holders, not a flat share set")]
 	V2DoesNotSupportFlatShareSet,
@@ -79,6 +88,7 @@ pub struct ManifestBuilder {
 	pivot_args: Option<Vec<String>>,
 	pivot_env: Option<PivotEnv>,
 	manifest_set: Option<ManifestSet>,
+	manifest_holders: Option<ManifestSetV2>,
 	share_set: Option<ShareSet>,
 	share_holders: Option<ShareSetV2>,
 	enclave: Option<NitroConfig>,
@@ -108,6 +118,7 @@ impl ManifestBuilder {
 			pivot_args: None,
 			pivot_env: None,
 			manifest_set: None,
+			manifest_holders: None,
 			share_set: None,
 			share_holders: None,
 			enclave: None,
@@ -193,6 +204,14 @@ impl ManifestBuilder {
 		self
 	}
 
+	/// Set the manifest approval set as a tree named by key digest (v2 only), in place of
+	/// [`Self::manifest_set`].
+	#[must_use]
+	pub fn manifest_holders(mut self, manifest_holders: ManifestSetV2) -> Self {
+		self.manifest_holders = Some(manifest_holders);
+		self
+	}
+
 	/// Set the flat share set (v1 only).
 	#[must_use]
 	pub fn share_set(mut self, share_set: ShareSet) -> Self {
@@ -256,9 +275,6 @@ impl ManifestBuilder {
 			self.namespace.ok_or(ManifestBuilderError::MissingNamespace)?;
 		let pivot_hash =
 			self.pivot_hash.ok_or(ManifestBuilderError::MissingPivotHash)?;
-		let manifest_set = self
-			.manifest_set
-			.ok_or(ManifestBuilderError::MissingManifestSet)?;
 		let enclave =
 			self.enclave.ok_or(ManifestBuilderError::MissingEnclave)?;
 
@@ -290,6 +306,10 @@ impl ManifestBuilder {
 						ManifestBuilderError::V1DoesNotSupportShareHolders,
 					);
 				}
+				let manifest_set = v1_manifest_set(
+					self.manifest_holders.as_ref(),
+					self.manifest_set,
+				)?;
 				let share_set = self
 					.share_set
 					.ok_or(ManifestBuilderError::MissingShareSet)?;
@@ -321,6 +341,8 @@ impl ManifestBuilder {
 						ManifestBuilderError::V2DoesNotSupportFlatShareSet,
 					);
 				}
+				let manifest_set =
+					v2_manifest_set(self.manifest_holders, self.manifest_set)?;
 				let share_set = match (self.share_holders, self.no_quorum_key) {
 					(Some(holders), _) => holders,
 					(None, true) => ShareSetV2::default(),
@@ -340,9 +362,7 @@ impl ManifestBuilder {
 						args,
 						env: self.pivot_env.unwrap_or_default(),
 					},
-					manifest_set: (&manifest_set)
-						.try_into()
-						.map_err(|_| ManifestBuilderError::InvalidMemberKey)?,
+					manifest_set,
 					share_set,
 					enclave,
 					dns: self.dns,
@@ -355,6 +375,32 @@ impl ManifestBuilder {
 				}))
 			}
 		}
+	}
+}
+
+/// A v1 manifest's manifest set: flat, never a tree.
+fn v1_manifest_set(
+	holders: Option<&ManifestSetV2>,
+	flat: Option<ManifestSet>,
+) -> Result<ManifestSet, ManifestBuilderError> {
+	if holders.is_some() {
+		return Err(ManifestBuilderError::V1DoesNotSupportManifestHolders);
+	}
+	flat.ok_or(ManifestBuilderError::MissingManifestSet)
+}
+
+/// A v2 manifest's manifest set: the tree given, or the flat set named by digest.
+fn v2_manifest_set(
+	holders: Option<ManifestSetV2>,
+	flat: Option<ManifestSet>,
+) -> Result<ManifestSetV2, ManifestBuilderError> {
+	match (holders, flat) {
+		(Some(holders), None) => Ok(holders),
+		(None, Some(flat)) => (&flat)
+			.try_into()
+			.map_err(|_| ManifestBuilderError::InvalidMemberKey),
+		(Some(_), Some(_)) => Err(ManifestBuilderError::TwoManifestSets),
+		(None, None) => Err(ManifestBuilderError::MissingManifestSet),
 	}
 }
 

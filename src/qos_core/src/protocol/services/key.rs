@@ -11,8 +11,8 @@ use crate::protocol::{
 	services::{
 		app_key::{Settled, seal_app_key, settle_quorum_key},
 		boot::{
-			VersionedManifestEnvelope, manifest::canonical_json_hash,
-			put_manifest_and_pivot,
+			ShareHolderNode, VersionedManifestEnvelope,
+			manifest::canonical_json_hash, put_manifest_and_pivot,
 		},
 	},
 };
@@ -245,18 +245,10 @@ fn validate_manifest(
 	// Node - thus it's important to retire all Original Nodes ASAP that use
 	// compromised Manifest Sets.
 	{
+		// The tree's digest covers every threshold and key digest, not aliases.
 		let old_set = old_manifest.manifest_set()?.normalised();
 		let new_set = new_manifest.manifest_set()?.normalised();
-		if old_set.threshold != new_set.threshold
-			|| old_set
-				.members
-				.iter()
-				.map(|m| (&m.receiving_key_digest, &m.signing_key_digest))
-				.ne(new_set
-					.members
-					.iter()
-					.map(|m| (&m.receiving_key_digest, &m.signing_key_digest)))
-		{
+		if old_set.tree()?.digest() != new_set.tree()?.digest() {
 			return Err(ProtocolError::DifferentManifestSet {
 				expected: qos_hex::encode(&canonical_json_hash(&old_set)),
 				actual: qos_hex::encode(&canonical_json_hash(&new_set)),

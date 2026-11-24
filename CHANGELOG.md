@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/umbra-defi/qos/compare/v0.19.0...v0.20.0) - 2026-11-25
+
+### Breaking
+- The v2 Manifest Set is a tree, as the Share Set is: `ManifestSetV2` gains `groups` of
+  digest-named members and subgroups, each node satisfied once `threshold` of its children are,
+  every threshold from 1 to its children. A manifest boots, a reshare gets the Manifest Set's
+  consent and a key forward finds the same Manifest Set only by the tree; a flat set is the tree
+  with no groups and behaves as before.
+- Every set always serializes `groups`, `[]` when it has none, and requires the field when read:
+  the Manifest Set, the Share Set and their groups. Every v2 manifest's JSON and hash change.
+- `ManifestSetV2::locate` is `ShareHolderNode::locate`, which returns a path. `validate`,
+  `normalised` and the new `is_satisfied_by_members` share the Share Set's tree code.
+
+### Added
+- `ManifestBuilder::manifest_holders` takes a v2 Manifest Set tree; `ManifestSetV2::from_tree`
+  names a full-key tree by digest.
+- `qos_client` reads the Manifest Set directory as a tree, groups named by dotted path, and
+  `generate-manifest-envelope` requires the collected approvals to satisfy it.
+
 ## [0.19.0](https://github.com/umbra-defi/qos/compare/v0.18.0...v0.19.0) - 2026-11-24
 
 ### Breaking

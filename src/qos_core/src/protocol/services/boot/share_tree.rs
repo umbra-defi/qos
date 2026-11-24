@@ -14,7 +14,7 @@
 //!
 //! [`GenesisSet`]: crate::protocol::services::genesis::GenesisSet
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use qos_hybrid::{ENCRYPT_PUBLIC_LEN, HybridPublic};
 use qos_nested_shamir::{DIGEST_BYTES, Holder, Node, Path, Point, Tree};
@@ -121,10 +121,8 @@ pub struct ShareHolderGroup {
 	#[serde(with = "qos_json::string_or_numeric")]
 	pub threshold: u32,
 	/// Members holding a shard of this group's secret.
-	#[serde(default)]
 	pub members: Vec<MemberDigest>,
-	/// Subgroups, each holding one share of this group's secret.
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	/// Subgroups, each holding one share of this group's secret; `[]` when it has none.
 	pub groups: Vec<ShareHolderGroup>,
 }
 
@@ -316,6 +314,58 @@ pub trait ShareHolderNode {
 			.map_err(|e| ProtocolError::InvalidShareTree(format!("{e:?}")))
 	}
 
+	/// Every member of the tree, depth first.
+	fn holder_members(&self) -> Vec<&MemberDigest> {
+		let mut out: Vec<&MemberDigest> = self.members().iter().collect();
+		for group in self.groups() {
+			out.extend(group.holder_members());
+		}
+		out
+	}
+
+	/// Checks the tree's limits as [`Self::tree`] does, every threshold from 1 to its node's
+	/// children included, and that no two members anywhere in it share an alias or a key digest,
+	/// so one key cannot count twice.
+	///
+	/// # Errors
+	///
+	/// [`ProtocolError::InvalidShareTree`], or [`ProtocolError::DuplicateQuorumMember`] for a
+	/// repeated alias or digest.
+	fn validate_holders(&self) -> Result<(), ProtocolError> {
+		let mut aliases = HashSet::new();
+		let mut digests = HashSet::new();
+		for member in self.holder_members() {
+			if !aliases.insert(&member.alias)
+				|| !digests.insert(&member.receiving_key_digest)
+				|| !digests.insert(&member.signing_key_digest)
+			{
+				return Err(ProtocolError::DuplicateQuorumMember);
+			}
+		}
+		self.tree().map(|_| ())
+	}
+
+	/// Whether `members` satisfy the tree: each placed by its key's digests at one holder, a group
+	/// satisfied once `threshold` of its members and groups are, and the top likewise. A member
+	/// the tree does not name counts for nothing, and one named twice counts once.
+	///
+	/// # Errors
+	///
+	/// As [`Self::tree`].
+	fn is_satisfied_by_members<'a>(
+		&self,
+		members: impl IntoIterator<Item = &'a QuorumMember>,
+	) -> Result<bool, ProtocolError> {
+		let tree = self.tree()?;
+		let mut present = BTreeSet::new();
+		for member in members {
+			if let Ok(Some(path)) = self.locate(member) {
+				present.insert(path);
+			}
+		}
+		Ok(tree.is_satisfied_by(&present))
+	}
+
 	/// The path of the holder whose key is `member`'s, or `None` when no holder's digests match.
 	///
 	/// # Errors
@@ -412,7 +462,7 @@ impl TryFrom<ShareSet> for ShareSetV2 {
 impl TryFrom<&ManifestSet> for ManifestSetV2 {
 	type Error = ProtocolError;
 
-	/// A full-key manifest set's members named by digest.
+	/// A full-key manifest set's members named by digest, with no groups.
 	fn try_from(set: &ManifestSet) -> Result<Self, ProtocolError> {
 		Ok(Self {
 			threshold: set.threshold,
@@ -421,47 +471,80 @@ impl TryFrom<&ManifestSet> for ManifestSetV2 {
 				.iter()
 				.map(MemberDigest::from_member)
 				.collect::<Result<_, _>>()?,
+			groups: vec![],
 		})
 	}
 }
 
-impl ManifestSetV2 {
-	/// The index of the member `member`'s key digests to, or `None`.
-	#[must_use]
-	pub fn locate(&self, member: &QuorumMember) -> Option<usize> {
-		self.members.iter().position(|digest| digest.names(member))
+impl ShareHolderNode for ManifestSetV2 {
+	fn threshold(&self) -> u32 {
+		self.threshold
 	}
+	fn members(&self) -> &[MemberDigest] {
+		&self.members
+	}
+	fn groups(&self) -> &[ShareHolderGroup] {
+		&self.groups
+	}
+}
 
-	/// Checks no two members share an alias or a key digest, so one key cannot count twice.
+impl ManifestSetV2 {
+	/// The manifest set a full-key tree names: its members by digest, its groups as they are.
 	///
 	/// # Errors
 	///
-	/// [`ProtocolError::DuplicateQuorumMember`] for a repeated alias or digest.
-	pub fn validate(&self) -> Result<(), ProtocolError> {
-		let mut aliases = HashSet::new();
-		let mut digests = HashSet::new();
-		for member in &self.members {
-			if !aliases.insert(&member.alias)
-				|| !digests.insert(&member.receiving_key_digest)
-				|| !digests.insert(&member.signing_key_digest)
-			{
-				return Err(ProtocolError::DuplicateQuorumMember);
-			}
-		}
-		Ok(())
+	/// As [`member_digests`], for a member whose key is not a hybrid key.
+	pub fn from_tree<N: ShareNode>(tree: &N) -> Result<Self, ProtocolError> {
+		let holders = tree.holder_set()?;
+		Ok(Self {
+			threshold: holders.threshold,
+			members: holders.members,
+			groups: holders.groups,
+		})
 	}
 
-	/// The set with its members sorted by digest: two manifests name the same set exactly when
-	/// these are equal.
+	/// Checks the set as [`ShareHolderNode::validate_holders`] does.
+	///
+	/// # Errors
+	///
+	/// As [`ShareHolderNode::validate_holders`].
+	pub fn validate(&self) -> Result<(), ProtocolError> {
+		self.validate_holders()
+	}
+
+	/// The set with every node's members sorted by digest and groups sorted by alias,
+	/// recursively: two manifests name the same set exactly when these are equal.
 	#[must_use]
 	pub fn normalised(&self) -> Self {
-		let mut members = self.members.clone();
-		members.sort_by(|left, right| {
-			(&left.signing_key_digest, &left.receiving_key_digest)
-				.cmp(&(&right.signing_key_digest, &right.receiving_key_digest))
-		});
-		Self { threshold: self.threshold, members }
+		Self {
+			threshold: self.threshold,
+			members: normalised_members(&self.members),
+			groups: normalised_groups(&self.groups),
+		}
 	}
+}
+
+fn normalised_members(members: &[MemberDigest]) -> Vec<MemberDigest> {
+	let mut members = members.to_vec();
+	members.sort_by(|left, right| {
+		(&left.signing_key_digest, &left.receiving_key_digest)
+			.cmp(&(&right.signing_key_digest, &right.receiving_key_digest))
+	});
+	members
+}
+
+fn normalised_groups(groups: &[ShareHolderGroup]) -> Vec<ShareHolderGroup> {
+	let mut groups: Vec<ShareHolderGroup> = groups
+		.iter()
+		.map(|group| ShareHolderGroup {
+			alias: group.alias.clone(),
+			threshold: group.threshold,
+			members: normalised_members(&group.members),
+			groups: normalised_groups(&group.groups),
+		})
+		.collect();
+	groups.sort_by(|left, right| left.alias.cmp(&right.alias));
+	groups
 }
 
 #[cfg(test)]
@@ -509,15 +592,108 @@ mod test {
 	}
 
 	#[test]
-	fn an_empty_share_set_serializes_and_hashes_as_before() {
+	fn every_set_names_its_groups_even_when_it_has_none() {
 		let empty = ShareSetV2::default();
 		assert_eq!(
 			serde_json::to_string(&empty).unwrap(),
-			r#"{"threshold":0,"members":[]}"#,
-			"a manifest without a quorum key must keep its share set's JSON, or its hash moves"
+			r#"{"threshold":0,"members":[],"groups":[]}"#,
 		);
 		assert!(empty.is_empty());
 		let _ = canonical_json_hash(&empty);
+		let flat = ManifestSetV2::try_from(&ManifestSet {
+			threshold: 1,
+			members: vec![member("u0")],
+		})
+		.unwrap();
+		assert!(
+			serde_json::to_string(&flat).unwrap().ends_with(r#""groups":[]}"#),
+			"a flat manifest set must say it has no groups, not leave them out"
+		);
+		for json in [
+			r#"{"threshold":0,"members":[]}"#,
+			r#"{"threshold":"1","members":[]}"#,
+		] {
+			assert!(
+				serde_json::from_str::<ShareSetV2>(json).is_err()
+					&& serde_json::from_str::<ManifestSetV2>(json).is_err(),
+				"a set without groups is not a 0.20 set: {json}"
+			);
+		}
+	}
+
+	/// Umbra (2 of u0, u1, u2) and either external team (ext1: a0 or a1; ext2: b0), both needed.
+	fn manifest_tree() -> (ManifestSetV2, Vec<QuorumMember>) {
+		let people: Vec<QuorumMember> = ["u0", "u1", "u2", "a0", "a1", "b0"]
+			.iter()
+			.map(|alias| member(alias))
+			.collect();
+		let tree = GenesisSet {
+			threshold: 2,
+			members: vec![],
+			groups: vec![
+				group("umbra", 2, people[0..3].to_vec()),
+				ShareGroup {
+					alias: "external".to_string(),
+					threshold: 1,
+					members: vec![],
+					groups: vec![
+						group("ext1", 1, people[3..5].to_vec()),
+						group("ext2", 1, people[5..6].to_vec()),
+					],
+				},
+			],
+		};
+		(ManifestSetV2::from_tree(&tree).unwrap(), people)
+	}
+
+	#[test]
+	fn manifest_approvals_must_satisfy_the_tree() {
+		let (set, people) = manifest_tree();
+		set.validate().unwrap();
+		let approved = |picks: &[usize]| {
+			set.is_satisfied_by_members(picks.iter().map(|i| &people[*i]))
+				.unwrap()
+		};
+		assert!(approved(&[0, 1, 3]), "two of Umbra and ext1");
+		assert!(approved(&[2, 0, 5]), "two of Umbra and ext2");
+		assert!(!approved(&[0, 1, 2]), "Umbra alone");
+		assert!(!approved(&[0, 3, 5]), "one of Umbra and both teams");
+		assert!(!approved(&[0, 0, 3]), "one Umbra member counted twice");
+		let stranger = member("x");
+		assert!(
+			!set.is_satisfied_by_members([&people[0], &stranger, &people[3]])
+				.unwrap(),
+			"a stranger counts for nothing"
+		);
+	}
+
+	#[test]
+	fn a_manifest_set_threshold_must_be_from_one_to_its_children() {
+		let (mut set, _) = manifest_tree();
+		set.groups[0].threshold = 0;
+		assert!(set.validate().is_err(), "threshold 0");
+		let (mut set, _) = manifest_tree();
+		set.groups[1].threshold = 3;
+		assert!(set.validate().is_err(), "threshold above the children");
+		let (mut set, people) = manifest_tree();
+		set.groups[1].groups[0]
+			.members
+			.push(MemberDigest::from_member(&people[0]).unwrap());
+		assert_eq!(set.validate(), Err(ProtocolError::DuplicateQuorumMember));
+	}
+
+	#[test]
+	fn a_manifest_set_normalises_to_one_form_in_any_order() {
+		let (set, _) = manifest_tree();
+		let mut reordered = set.clone();
+		reordered.groups.reverse();
+		reordered.groups[1].members.reverse();
+		assert_ne!(reordered, set);
+		assert_eq!(reordered.normalised(), set.normalised());
+		assert_eq!(
+			reordered.normalised().tree().unwrap().digest(),
+			set.normalised().tree().unwrap().digest()
+		);
 	}
 
 	#[test]

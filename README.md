@@ -185,6 +185,13 @@ There are two types of quorum sets:
 
 The collection of members who can approve a manifest. In the typical instance provisioning flow, the Manifest Set will approve the details of the Manifest and then the Share Set members can trust a manifest if it has threshold approvals from the Manifest Set. This creates a logical division of responsibilities between Share Keys and Manifest Keys that enables better key usage practices and organizations to scale parts of the provision flow separately. A v2 manifest names every key by digest, the Manifest Set's members and the app key minter as the Share Set's holders: an alias and the SHA3-384 digests of the key's receiving and signing halves. An approval carries the approver's full key, which must digest to a member.
 
+A v2 Manifest Set is a tree of the same shape as the Share Set: members and groups, each node
+needing `threshold` of its children, every threshold from 1 to its node's children. A manifest
+boots once its approvals satisfy the top, so a root of 2 over an Umbra group (2 of 3) and an
+external group (1 of its teams) needs both organisations to ship a manifest. A flat set is the tree
+with `groups: []`, and needs `threshold` of its members as before. `qos_client` reads the Manifest
+Set directory as it reads a share set directory.
+
 ### Share Set
 
 The collection of members who each hold shares of the Quorum Key and thus provision an enclave by attesting and then posting their shares. When posting shares, these members will also provide a signature of the manifest. The signature is recorded in the manifest envelope in order to leave an audit trail. This way, third parties can check which share set members actually participated in provisioning the quorum key
