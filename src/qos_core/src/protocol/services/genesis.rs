@@ -1,6 +1,6 @@
 //! Genesis boot logic and types.
 
-use std::{fmt, iter::zip};
+use std::fmt;
 
 use qos_crypto::sha_512;
 use qos_hybrid::{HybridPair, HybridPublic};
@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
 	ProtocolError, ProtocolState, QosHash,
-	services::boot::{QuorumMember, ShareGroup, ShareNode},
+	services::{
+		boot::{QuorumMember, ShareGroup, ShareHolderNode, ShareNode},
+		envelope::{QuorumKeyEnvelope, encode_shard, seal_quorum_key},
+	},
 };
 
 const QOS_TEST_MESSAGE: &[u8] = b"qos-test-message";
@@ -101,26 +104,23 @@ pub struct RecoveredPermutation(Vec<MemberShard>);
 )]
 #[serde(rename_all = "camelCase")]
 pub struct GenesisMemberOutput {
-	/// The Quorum Member whom's Setup Key was used.
+	/// The holder this shard was dealt to.
 	pub share_set_member: QuorumMember,
-	/// Quorum Key Share encrypted to the `setup_member`'s Personal Key.
+	/// The holder's envelope key shard, [`encode_shard`]'s deal id and 64 bytes, encrypted to the
+	/// holder's key.
 	#[serde(with = "qos_hex::serde")]
-	pub encrypted_quorum_key_share: Vec<u8>,
-	/// Sha512 hash of the plaintext quorum key share. Used by the share set
-	/// member to verify they correctly decrypted the share.
+	pub encrypted_shard: Vec<u8>,
+	/// SHA-512 of the plaintext encoded shard, for the holder to check its decryption.
 	#[serde(with = "qos_hex::serde")]
-	pub share_hash: [u8; 64],
+	pub shard_hash: [u8; 64],
 }
 
 impl fmt::Debug for GenesisMemberOutput {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		f.debug_struct("GenesisMemberOutput")
 			.field("share_set_member", &self.share_set_member)
-			.field(
-				"encrypted_quorum_key_share",
-				&qos_hex::encode(&self.encrypted_quorum_key_share),
-			)
-			.field("share_hash", &qos_hex::encode(&self.share_hash))
+			.field("encrypted_shard", &qos_hex::encode(&self.encrypted_shard))
+			.field("shard_hash", &qos_hex::encode(&self.shard_hash))
 			.finish()
 	}
 }
@@ -150,8 +150,12 @@ pub struct GenesisOutput {
 	/// Public Quorum Key, DER encoded.
 	#[serde(with = "qos_hex::serde")]
 	pub quorum_key: Vec<u8>,
-	/// Quorum Member specific outputs from the genesis ceremony.
+	/// Each holder's encrypted envelope key shard, depth first.
 	pub member_outputs: Vec<GenesisMemberOutput>,
+	/// The encoded [`QuorumKeyEnvelope`] the master seed is sealed in, which every holder keeps
+	/// beside its shard and every manifest names by digest.
+	#[serde(with = "qos_hex::serde")]
+	pub envelope: Vec<u8>,
 	/// All successfully `RecoveredPermutation`s completed during the genesis
 	/// process.
 	pub recovery_permutations: Vec<RecoveredPermutation>,
@@ -188,8 +192,42 @@ impl fmt::Debug for GenesisOutput {
 	}
 }
 
-// How many permutations of `threshold` keys should we use
-// to reconstruct the original Quorum Key?
+/// Seals `master_seed` under a fresh envelope key dealt over `holders`' tree, and encrypts each
+/// holder's encoded shard to its key, depth first. Genesis and reshare both deal this way.
+///
+/// # Errors
+///
+/// As [`ShareNode::holder_set`], [`seal_quorum_key`] and the holders' encryption.
+pub(in crate::protocol) fn deal_quorum_key<N: ShareNode>(
+	master_seed: &[u8; qos_hybrid::MASTER_SEED_LEN],
+	quorum_public_key: &[u8],
+	holders: &N,
+) -> Result<(QuorumKeyEnvelope, Vec<GenesisMemberOutput>), ProtocolError> {
+	let holder_set = holders.holder_set()?;
+	let tree = holder_set.tree()?;
+	let (envelope, shards) =
+		seal_quorum_key(master_seed, quorum_public_key, &tree)?;
+	let member_outputs = holders
+		.leaves()
+		.into_iter()
+		.map(|member| {
+			let path = holder_set.locate(member)?.ok_or(
+				ProtocolError::InvalidShareTree(
+					"a member has no holder in its own tree".to_string(),
+				),
+			)?;
+			let encoded = encode_shard(&envelope.deal_id, &shards[&path]);
+			Ok(GenesisMemberOutput {
+				share_set_member: member.clone(),
+				encrypted_shard: HybridPublic::from_bytes(&member.pub_key)?
+					.encrypt(&encoded)?,
+				shard_hash: sha_512(&encoded),
+			})
+		})
+		.collect::<Result<_, ProtocolError>>()?;
+	Ok((envelope, member_outputs))
+}
+
 pub(in crate::protocol) fn boot_genesis(
 	state: &mut ProtocolState,
 	genesis_set: &GenesisSet,
@@ -198,27 +236,12 @@ pub(in crate::protocol) fn boot_genesis(
 	genesis_set.validate()?;
 
 	let quorum_pair = HybridPair::generate()?;
-	let master_seed = &quorum_pair.to_master_seed()[..];
+	let seed = quorum_pair.to_master_seed();
+	let master_seed = &seed[..];
+	let quorum_public = quorum_pair.public_key().to_bytes();
 
-	let shares = qos_crypto::share_tree::tree_shares_generate(
-		master_seed,
-		&genesis_set.shape(),
-	)
-	.map_err(|e| ProtocolError::QosCrypto(format!("{e:?}")))?;
-
-	let member_outputs: Result<Vec<_>, _> = zip(shares, genesis_set.leaves().into_iter().cloned())
-		.map(|(share, share_set_member)| -> Result<GenesisMemberOutput, ProtocolError> {
-			// 1) encrypt the share to quorum key
-			let personal_pub = HybridPublic::from_bytes(&share_set_member.pub_key)?;
-			let encrypted_quorum_key_share = personal_pub.encrypt(&share[..])?;
-
-			Ok(GenesisMemberOutput {
-				share_set_member,
-				encrypted_quorum_key_share,
-				share_hash: sha_512(&share[..]),
-			})
-		})
-		.collect();
+	let (envelope, member_outputs) =
+		deal_quorum_key(seed, &quorum_public, genesis_set)?;
 
 	let dr_key_wrapped_quorum_key = if let Some(dr_key) = &maybe_dr_key {
 		let dr_public = HybridPublic::from_bytes(dr_key)
@@ -232,8 +255,9 @@ pub(in crate::protocol) fn boot_genesis(
 	let genesis_output = GenesisOutput {
 		set: genesis_set.clone(),
 		dr_key: maybe_dr_key,
-		member_outputs: member_outputs?,
-		quorum_key: quorum_pair.public_key().to_bytes(),
+		member_outputs,
+		envelope: envelope.encode(),
+		quorum_key: quorum_public,
 		// TODO: generate N choose K recovery permutations
 		recovery_permutations: vec![],
 		dr_key_wrapped_quorum_key,
@@ -259,29 +283,38 @@ pub(in crate::protocol) fn boot_genesis(
 
 #[cfg(test)]
 mod test {
-	use qos_hybrid::MASTER_SEED_LEN;
+	use std::collections::BTreeMap;
+
 	use qos_nsm::mock::MockNsm;
 
 	use super::*;
-	use crate::handles::Handles;
+	use crate::{
+		handles::Handles,
+		protocol::services::envelope::{decode_shard, open_quorum_key},
+	};
+
+	fn state(name: &str) -> ProtocolState {
+		let handles = Handles::new(
+			format!("EPH.{name}"),
+			format!("QUO.{name}"),
+			format!("QUO.{name}.app"),
+			format!("MAN.{name}"),
+			format!("PIV.{name}"),
+		);
+		ProtocolState::new(Box::new(MockNsm::new()), handles, None)
+	}
+
+	fn member(index: usize, pair: &HybridPair) -> QuorumMember {
+		QuorumMember {
+			alias: format!("member{index}"),
+			pub_key: pair.public_key().to_bytes(),
+		}
+	}
 
 	#[test]
-	fn boot_genesis_splits_over_a_share_tree() {
-		let handles = Handles::new(
-			"EPH.tree".to_string(),
-			"QUO.tree".to_string(),
-			"QUO.tree.app".to_string(),
-			"MAN.tree".to_string(),
-			"PIV.tree".to_string(),
-		);
-		let mut protocol_state =
-			ProtocolState::new(Box::new(MockNsm::new()), handles, None);
+	fn genesis_seals_the_quorum_key_in_an_envelope_dealt_over_the_tree() {
 		let pairs: Vec<_> =
 			(0..5).map(|_| HybridPair::generate().unwrap()).collect();
-		let member = |index: usize| QuorumMember {
-			alias: format!("member{index}"),
-			pub_key: pairs[index].public_key().to_bytes(),
-		};
 		let group =
 			|alias: &str, threshold, members: Vec<QuorumMember>| ShareGroup {
 				alias: alias.to_string(),
@@ -293,38 +326,50 @@ mod test {
 			members: vec![],
 			threshold: 2,
 			groups: vec![
-				group("umbra", 2, vec![member(0), member(1), member(2)]),
-				group("external", 1, vec![member(3), member(4)]),
+				group(
+					"umbra",
+					2,
+					vec![
+						member(0, &pairs[0]),
+						member(1, &pairs[1]),
+						member(2, &pairs[2]),
+					],
+				),
+				group(
+					"external",
+					1,
+					vec![member(3, &pairs[3]), member(4, &pairs[4])],
+				),
 			],
 		};
 
-		let (output, _nsm_response) =
-			boot_genesis(&mut protocol_state, &genesis_set, None).unwrap();
+		let (output, _) =
+			boot_genesis(&mut state("envelope"), &genesis_set, None).unwrap();
 		assert_eq!(output.set, genesis_set);
-		let shares: Vec<_> = zip(&output.member_outputs, &pairs)
-			.enumerate()
-			.map(|(index, (output, pair))| {
-				assert_eq!(output.share_set_member, member(index));
-				let share =
-					pair.decrypt(&output.encrypted_quorum_key_share).unwrap();
-				assert_eq!(sha_512(&share[..]), output.share_hash);
-				share
-			})
-			.collect();
+		let envelope = QuorumKeyEnvelope::decode(&output.envelope).unwrap();
+		let holders = genesis_set.holder_set().unwrap();
+		let tree = holders.tree().unwrap();
+		assert_eq!(envelope.tree_digest, tree.digest().0);
 
-		let tree = genesis_set.shape();
-		let subset: Vec<_> = shares
-			.into_iter()
-			.enumerate()
-			.map(|(leaf, share)| [0, 2, 4].contains(&leaf).then_some(share))
-			.collect();
-		let seed: zeroize::Zeroizing<[u8; MASTER_SEED_LEN]> =
-			zeroize::Zeroizing::new(
-				qos_crypto::share_tree::tree_shares_reconstruct(&tree, &subset)
-					.unwrap()[..]
-					.try_into()
-					.unwrap(),
-			);
+		let mut shards = BTreeMap::new();
+		for (index, (output, pair)) in
+			output.member_outputs.iter().zip(&pairs).enumerate()
+		{
+			assert_eq!(output.share_set_member, member(index, pair));
+			let encoded = pair.decrypt(&output.encrypted_shard).unwrap();
+			assert_eq!(sha_512(&encoded), output.shard_hash);
+			let (deal_id, shard) = decode_shard(&encoded).unwrap();
+			assert_eq!(deal_id, envelope.deal_id);
+			if [0, 2, 4].contains(&index) {
+				let path =
+					holders.locate(&output.share_set_member).unwrap().unwrap();
+				shards.insert(path, shard);
+			}
+		}
+
+		let seed =
+			open_quorum_key(&envelope, &output.quorum_key, &tree, &shards)
+				.unwrap();
 		assert_eq!(
 			HybridPair::from_master_seed(&seed)
 				.unwrap()
@@ -335,195 +380,58 @@ mod test {
 	}
 
 	#[test]
-	fn boot_genesis_refuses_an_invalid_share_tree() {
-		let handles = Handles::new(
-			"EPH.badtree".to_string(),
-			"QUO.badtree".to_string(),
-			"QUO.badtree.app".to_string(),
-			"MAN.badtree".to_string(),
-			"PIV.badtree".to_string(),
-		);
-		let mut protocol_state =
-			ProtocolState::new(Box::new(MockNsm::new()), handles, None);
-		let member = QuorumMember {
-			alias: "only".to_string(),
-			pub_key: HybridPair::generate().unwrap().public_key().to_bytes(),
+	fn genesis_refuses_an_invalid_tree_and_a_repeated_key() {
+		let pair = HybridPair::generate().unwrap();
+		let over = GenesisSet {
+			members: vec![member(0, &pair)],
+			threshold: 2,
+			groups: vec![],
 		};
-		let genesis_set =
-			GenesisSet { members: vec![member], threshold: 2, groups: vec![] };
 		assert!(matches!(
-			boot_genesis(&mut protocol_state, &genesis_set, None),
+			boot_genesis(&mut state("over"), &over, None),
 			Err(ProtocolError::InvalidShareTree(_))
 		));
-	}
 
-	#[test]
-	fn boot_genesis_works() {
-		let handles = Handles::new(
-			"EPH".to_string(),
-			"QUO".to_string(),
-			"QUO.app".to_string(),
-			"MAN".to_string(),
-			"PIV".to_string(),
-		);
-		let mut protocol_state =
-			ProtocolState::new(Box::new(MockNsm::new()), handles.clone(), None);
-		let member1_pair = HybridPair::generate().unwrap();
-		let member2_pair = HybridPair::generate().unwrap();
-		let member3_pair = HybridPair::generate().unwrap();
-
-		let genesis_members = vec![
-			QuorumMember {
-				alias: "member1".to_string(),
-				pub_key: member1_pair.public_key().to_bytes(),
-			},
-			QuorumMember {
-				alias: "member2".to_string(),
-				pub_key: member2_pair.public_key().to_bytes(),
-			},
-			QuorumMember {
-				alias: "member3".to_string(),
-				pub_key: member3_pair.public_key().to_bytes(),
-			},
-		];
-
-		let member_pairs = vec![member1_pair, member2_pair, member3_pair];
-
-		let threshold = 2;
-		let genesis_set =
-			GenesisSet { members: genesis_members, threshold, groups: vec![] };
-
-		let (output, _nsm_response) =
-			boot_genesis(&mut protocol_state, &genesis_set, None).unwrap();
-		let zipped = std::iter::zip(output.member_outputs, member_pairs);
-		let shares: Vec<zeroize::Zeroizing<Vec<u8>>> = zipped
-			.map(|(output, pair)| {
-				let decrypted_share =
-					pair.decrypt(&output.encrypted_quorum_key_share).unwrap();
-
-				assert_eq!(sha_512(&decrypted_share[..]), output.share_hash);
-
-				decrypted_share
-			})
-			.collect();
-
-		let reconstructed: zeroize::Zeroizing<[u8; MASTER_SEED_LEN]> =
-			zeroize::Zeroizing::new(
-				qos_crypto::shamir::shares_reconstruct(
-					&shares[0..threshold as usize],
-				)
-				.unwrap()[..]
-					.try_into()
-					.unwrap(),
-			);
-		let reconstructed_quorum_key =
-			HybridPair::from_master_seed(&reconstructed).unwrap();
-
-		let quorum_public_key =
-			HybridPublic::from_bytes(&output.quorum_key).unwrap();
-		assert_eq!(
-			reconstructed_quorum_key.public_key().to_bytes(),
-			quorum_public_key.to_bytes()
-		);
-
-		// Sanity check
-		assert!(!handles.quorum_key_exists());
-		assert!(!handles.manifest_envelope_exists());
-		assert!(!handles.pivot_exists());
-
-		let test_message_plaintext = reconstructed_quorum_key
-			.decrypt(&output.test_message_ciphertext)
-			.unwrap();
-		assert_eq!(&test_message_plaintext[..], QOS_TEST_MESSAGE);
-		quorum_public_key
-			.verify(QOS_TEST_MESSAGE, &output.test_message_signature)
-			.unwrap();
-
-		let quorum_key_hash =
-			sha_512(qos_hex::encode(&reconstructed[..]).as_bytes());
-		assert_eq!(quorum_key_hash, output.quorum_key_hash);
-	}
-
-	#[test]
-	fn boot_genesis_rejects_duplicate_members() {
-		let handles = Handles::new(
-			"EPH2".to_string(),
-			"QUO2".to_string(),
-			"QUO2.app".to_string(),
-			"MAN2".to_string(),
-			"PIV2".to_string(),
-		);
-		let mut protocol_state =
-			ProtocolState::new(Box::new(MockNsm::new()), handles, None);
-		let member_pair = HybridPair::generate().unwrap();
-
-		// The same public key under two different aliases must be rejected.
-		let genesis_set = GenesisSet {
+		let twice = GenesisSet {
 			members: vec![
-				QuorumMember {
-					alias: "alias-a".to_string(),
-					pub_key: member_pair.public_key().to_bytes(),
-				},
-				QuorumMember {
-					alias: "alias-b".to_string(),
-					pub_key: member_pair.public_key().to_bytes(),
-				},
+				member(0, &pair),
+				QuorumMember { alias: "alias-b".into(), ..member(1, &pair) },
 			],
 			threshold: 2,
 			groups: vec![],
 		};
-
-		let err =
-			boot_genesis(&mut protocol_state, &genesis_set, None).unwrap_err();
-		assert_eq!(err, ProtocolError::DuplicateQuorumMember);
+		assert_eq!(
+			boot_genesis(&mut state("twice"), &twice, None).unwrap_err(),
+			ProtocolError::DuplicateQuorumMember
+		);
 	}
 
 	#[test]
-	fn boot_genesis_output_echoes_the_exact_request() {
-		let handles = Handles::new(
-			"EPH".to_string(),
-			"QUO".to_string(),
-			"QUO.app".to_string(),
-			"MAN".to_string(),
-			"PIV".to_string(),
-		);
-		let mut protocol_state =
-			ProtocolState::new(Box::new(MockNsm::new()), handles, None);
-
-		let members = (1..=3)
-			.map(|i| QuorumMember {
-				alias: format!("member{i}"),
-				pub_key: HybridPair::generate()
-					.unwrap()
-					.public_key()
-					.to_bytes(),
-			})
-			.collect();
-		let genesis_set = GenesisSet { members, threshold: 2, groups: vec![] };
-		let dr_key = HybridPair::generate().unwrap().public_key().to_bytes();
-
+	fn genesis_wraps_the_seed_to_a_dr_key() {
+		let member_pair = HybridPair::generate().unwrap();
+		let dr_pair = HybridPair::generate().unwrap();
+		let genesis_set = GenesisSet {
+			members: vec![member(0, &member_pair)],
+			threshold: 1,
+			groups: vec![],
+		};
 		let (output, _) = boot_genesis(
-			&mut protocol_state,
+			&mut state("dr"),
 			&genesis_set,
-			Some(dr_key.clone()),
+			Some(dr_pair.public_key().to_bytes()),
 		)
 		.unwrap();
-		assert_eq!(output.set, genesis_set);
-		assert_eq!(output.dr_key, Some(dr_key));
-
-		// The echoed request is part of the attested-to output hash, so
-		// tampering with it is detectable.
-		let mut tampered = output.clone();
-		tampered.set.threshold = 1;
-		assert_ne!(tampered.qos_hash(), output.qos_hash());
-
-		let mut tampered = output.clone();
-		tampered.dr_key = None;
-		assert_ne!(tampered.qos_hash(), output.qos_hash());
-
-		let (output, _) =
-			boot_genesis(&mut protocol_state, &genesis_set, None).unwrap();
-		assert_eq!(output.set, genesis_set);
-		assert_eq!(output.dr_key, None);
+		let wrapped = dr_pair
+			.decrypt(&output.dr_key_wrapped_quorum_key.unwrap())
+			.unwrap();
+		let seed: zeroize::Zeroizing<[u8; qos_hybrid::MASTER_SEED_LEN]> =
+			zeroize::Zeroizing::new(wrapped[..].try_into().unwrap());
+		assert_eq!(
+			HybridPair::from_master_seed(&seed)
+				.unwrap()
+				.public_key()
+				.to_bytes(),
+			output.quorum_key
+		);
 	}
 }

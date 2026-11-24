@@ -1,0 +1,30 @@
+[package]
+name = "umbra_qos_nested_shamir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A 64-byte secret dealt down a nested threshold tree of holders with Shamir over GF(2^8), rebuilt bottom up and accepted only against its SHA3-384 root commitment"
+repository = "https://github.com/umbra-defi/qos"
+readme = "README.md"
+keywords = ["quorumos", "shamir", "secret-sharing", "threshold", "cryptography"]
+categories = ["cryptography"]
+
+[lints]
+workspace = true
+
+[dependencies]
+rand_core = "0.6"
+sha3 = "0.10"
+subtle = "2.6"
+zeroize = { version = "1.8", features = ["derive"] }
+
+[dev-dependencies]
+hex = "0.4"
+proptest = "1"
+rand_chacha = "0.3"
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[lib]
+name = "qos_nested_shamir"
+path = "src/lib.rs"

@@ -7,8 +7,12 @@ use std::{
 
 use borsh::de::BorshDeserialize;
 use integration::{LOCAL_HOST, PCR3_PRE_IMAGE_PATH, QOS_DIST_DIR};
-use qos_core::protocol::services::genesis::GenesisOutput;
-use qos_crypto::{sha_512, shamir::shares_reconstruct};
+use qos_core::protocol::services::{
+	boot::{ShareHolderNode, ShareNode},
+	envelope::{QuorumKeyEnvelope, decode_shard, open_quorum_key},
+	genesis::GenesisOutput,
+};
+use qos_crypto::sha_512;
 use qos_hybrid::{HybridPair, HybridPublic};
 use qos_nsm::nitro::unsafe_attestation_doc_from_der;
 use qos_test_primitives::{ChildWrapper, PathWrapper};
@@ -176,8 +180,10 @@ async fn genesis_e2e() {
 	)
 	.unwrap();
 
-	// -- Recreate the quorum key from the encrypted shares.
-	let mut decrypted_shares: Vec<_> = genesis_output
+	// -- Rebuild the envelope key from the encrypted shards and open the
+	// quorum key envelope.
+	let holders = genesis_output.set.holder_set().unwrap();
+	let mut decrypted_shards: Vec<_> = genesis_output
 		.member_outputs
 		.iter()
 		.map(|member| {
@@ -189,24 +195,28 @@ async fn genesis_e2e() {
 
 			let share_pair = HybridPair::from_hex_file(share_key_path).unwrap();
 
-			// Decrypt the share with the personal key
-			let plain_text_share =
-				share_pair.decrypt(&member.encrypted_quorum_key_share).unwrap();
+			// Decrypt the shard with the personal key
+			let plain_text_shard =
+				share_pair.decrypt(&member.encrypted_shard).unwrap();
 
-			assert_eq!(sha_512(&plain_text_share[..]), member.share_hash);
+			assert_eq!(sha_512(&plain_text_shard[..]), member.shard_hash);
 
-			plain_text_share
+			let path =
+				holders.locate(&member.share_set_member).unwrap().unwrap();
+			(path, decode_shard(&plain_text_shard).unwrap().1)
 		})
 		.collect();
 
 	// Try recovering from a random permutation
-	decrypted_shares.shuffle(&mut rng());
-	let master_secret: zeroize::Zeroizing<[u8; qos_hybrid::MASTER_SEED_LEN]> =
-		zeroize::Zeroizing::new(
-			shares_reconstruct(&decrypted_shares[0..threshold]).unwrap()[..]
-				.try_into()
-				.unwrap(),
-		);
+	decrypted_shards.shuffle(&mut rng());
+	let envelope = QuorumKeyEnvelope::decode(&genesis_output.envelope).unwrap();
+	let master_secret = open_quorum_key(
+		&envelope,
+		&genesis_output.quorum_key,
+		&holders.tree().unwrap(),
+		&decrypted_shards.into_iter().take(threshold).collect(),
+	)
+	.unwrap();
 	let reconstructed = HybridPair::from_master_seed(&master_secret).unwrap();
 	assert!(
 		reconstructed.public_key()
@@ -249,16 +259,14 @@ async fn genesis_e2e() {
 			Path::new(&personal_dir(user)).join(format!("{user}.share"));
 		let share_key_pair = HybridPair::from_hex_file(share_key_path).unwrap();
 
-		// Check the share is encrypted to personal key
-		let share =
-			share_key_pair.decrypt(&fs::read(share_path).unwrap()).unwrap();
-		// Cross check that the share belongs `decrypted_shares`, which we
-		// created out of band in this test.
-		assert!(
-			decrypted_shares
-				.iter()
-				.any(|decrypted_share| decrypted_share.as_slice() == &share[..])
-		);
+		// Check the shard is encrypted to the personal key and belongs to this
+		// genesis's envelope, and the holder kept a copy of the envelope
+		let shard =
+			share_key_pair.decrypt(&fs::read(&share_path).unwrap()).unwrap();
+		assert_eq!(decode_shard(&shard).unwrap().0, envelope.deal_id);
+		let mut envelope_copy = share_path.into_os_string();
+		envelope_copy.push(".envelope");
+		assert_eq!(fs::read(envelope_copy).unwrap(), genesis_output.envelope);
 	}
 
 	// Check that we can use the DR key to decrypt the quorum key

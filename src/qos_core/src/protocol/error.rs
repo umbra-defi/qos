@@ -237,9 +237,16 @@ pub enum ProtocolError {
 	InvalidShareTree(String),
 	/// The member already provisioned a share for this boot.
 	ShareAlreadyProvisioned,
-	/// The share's identifier is not its member's position in the share
-	/// tree, or its length is not a master seed's plus one.
+	/// The posted shard is not an envelope key shard.
 	ShareNotForMember,
+	/// The quorum key envelope is malformed, is not the one the manifest names, or does not
+	/// open.
+	QuorumKeyEnvelope(String),
+	/// A shard was posted before the quorum key envelope the manifest names.
+	QuorumKeyEnvelopeNotProvided,
+	/// A reshare's approvals do not sign it, or do not satisfy both the current holder tree and
+	/// the manifest set.
+	ReshareNotApproved(String),
 }
 
 impl From<std::io::Error> for ProtocolError {
@@ -500,10 +507,19 @@ impl std::fmt::Display for ProtocolError {
 			Self::ShareAlreadyProvisioned => {
 				write!(f, "the member already provisioned a share")
 			}
-			Self::ShareNotForMember => write!(
+			Self::ShareNotForMember => {
+				write!(f, "the posted shard is not an envelope key shard")
+			}
+			Self::QuorumKeyEnvelope(reason) => {
+				write!(f, "quorum key envelope: {reason}")
+			}
+			Self::QuorumKeyEnvelopeNotProvided => write!(
 				f,
-				"the share does not belong to the member's position in the share tree"
+				"post the quorum key envelope the manifest names before any shard"
 			),
+			Self::ReshareNotApproved(reason) => {
+				write!(f, "reshare not approved: {reason}")
+			}
 		}
 	}
 }

@@ -42,6 +42,8 @@ const QOS_REALEASE_DIR: &str = "qos-release-dir";
 const PCR3_PREIMAGE_PATH: &str = "pcr3-preimage-path";
 const PIVOT_HASH_PATH: &str = "pivot-hash-path";
 const SHARE_SET_DIR: &str = "share-set-dir";
+const QUORUM_KEY_ENVELOPE_PATH: &str = "quorum-key-envelope-path";
+const RESHARE_APPROVALS_DIR: &str = "reshare-approvals-dir";
 const MANIFEST_SET_DIR: &str = "manifest-set-dir";
 const PATCH_SET_DIR: &str = "patch-set-dir";
 const NAMESPACE_DIR: &str = "namespace-dir";
@@ -180,6 +182,16 @@ pub enum Command {
 	ProxyReEncryptShare,
 	/// Submit an encrypted share to an enclave.
 	PostShare,
+	/// Hand a booted enclave the quorum key envelope its manifest names, before
+	/// any shard.
+	ProvideQuorumKeyEnvelope,
+	/// Sign a reshare of the manifest's quorum key to a new holder tree.
+	ApproveReshare,
+	/// Order a provisioned enclave to reshare its quorum key to a new holder
+	/// tree, with approvals satisfying the current tree and the manifest set.
+	ReshareQuorumKey,
+	/// As a new holder, check a reshare and keep its shard and envelope.
+	AfterReshare,
 	/// Given a directory containing a manifest and threshold approvals for it,
 	/// generate a manifest envelope and write it back to the same directory.
 	GenerateManifestEnvelope,
@@ -254,6 +266,10 @@ impl From<&str> for Command {
 			"get-ephemeral-key-hex" => Self::GetEphemeralKeyHex,
 			"proxy-re-encrypt-share" => Self::ProxyReEncryptShare,
 			"post-share" => Self::PostShare,
+			"provide-quorum-key-envelope" => Self::ProvideQuorumKeyEnvelope,
+			"approve-reshare" => Self::ApproveReshare,
+			"reshare-quorum-key" => Self::ReshareQuorumKey,
+			"after-reshare" => Self::AfterReshare,
 			"dangerous-dev-boot" => Self::DangerousDevBoot,
 			"provision-yubikey" => Self::ProvisionYubiKey,
 			"pivot-hash" => Self::PivotHash,
@@ -731,6 +747,19 @@ impl Command {
 			.token(Self::validation_time_override_token())
 	}
 
+	fn after_reshare() -> Parser {
+		Self::after_genesis()
+			.token(
+				Token::new(
+					QUORUM_KEY_PATH,
+					"The namespace's quorum public key, from your pin, not the coordinator.",
+				)
+				.takes_value(true)
+				.required(true),
+			)
+			.token(Self::share_set_dir_token())
+	}
+
 	fn verify_genesis() -> Parser {
 		Parser::new()
 			.token(Self::namespace_dir_token())
@@ -826,6 +855,47 @@ impl Command {
 		Self::base()
 			.token(Self::approval_path_token())
 			.token(Self::eph_wrapped_share_path_token())
+	}
+
+	fn provide_quorum_key_envelope() -> Parser {
+		Self::base().token(
+			Token::new(
+				QUORUM_KEY_ENVELOPE_PATH,
+				"Path to the encoded quorum key envelope the manifest names.",
+			)
+			.takes_value(true)
+			.required(true),
+		)
+	}
+
+	fn approve_reshare() -> Parser {
+		Parser::new()
+			.token(Self::yubikey_token())
+			.token(Self::secret_path_token())
+			.token(Self::alias_token())
+			.token(Self::manifest_path_token())
+			.token(Self::share_set_dir_token())
+			.token(Self::approval_path_token())
+			.token(Self::yubikey_salt_path_token())
+			.token(Self::yubikey_passphrase_path_token())
+			.token(Self::challenge_command_token())
+	}
+
+	fn reshare_quorum_key() -> Parser {
+		Self::base()
+			.token(Self::share_set_dir_token())
+			.token(
+				Token::new(
+					RESHARE_APPROVALS_DIR,
+					"Directory of `.approval` files from approve-reshare.",
+				)
+				.takes_value(true)
+				.required(true),
+			)
+			.token(Self::namespace_dir_token())
+			.token(Self::qos_release_dir_token())
+			.token(Self::pcr3_preimage_path_token())
+			.token(Self::unsafe_skip_attestation_token())
 	}
 
 	fn generate_manifest_envelope() -> Parser {
@@ -979,6 +1049,7 @@ impl GetParserForCommand for Command {
 			Self::GenerateFileKey => Self::generate_file_key(),
 			Self::BootGenesis => Self::boot_genesis(),
 			Self::AfterGenesis => Self::after_genesis(),
+			Self::AfterReshare => Self::after_reshare(),
 			Self::VerifyGenesis => Self::verify_genesis(),
 			Self::GenerateManifest => Self::generate_manifest(),
 			Self::ApproveManifest => Self::approve_manifest(),
@@ -987,6 +1058,11 @@ impl GetParserForCommand for Command {
 			Self::ProxyReEncryptShare => Self::proxy_re_encrypt_share(),
 			Self::GetEphemeralKeyHex => Self::get_ephemeral_key_hex(),
 			Self::PostShare => Self::post_share(),
+			Self::ProvideQuorumKeyEnvelope => {
+				Self::provide_quorum_key_envelope()
+			}
+			Self::ApproveReshare => Self::approve_reshare(),
+			Self::ReshareQuorumKey => Self::reshare_quorum_key(),
 			Self::DangerousDevBoot => Self::dangerous_dev_boot(),
 			Self::GenerateManifestEnvelope => {
 				Self::generate_manifest_envelope()
@@ -1082,6 +1158,20 @@ impl ClientOpts {
 		self.parsed
 			.single(SHARE_SET_DIR)
 			.expect("`--share-set-dir` is a required arg")
+			.clone()
+	}
+
+	fn quorum_key_envelope_path(&self) -> String {
+		self.parsed
+			.single(QUORUM_KEY_ENVELOPE_PATH)
+			.expect("`--quorum-key-envelope-path` is a required arg")
+			.clone()
+	}
+
+	fn reshare_approvals_dir(&self) -> String {
+		self.parsed
+			.single(RESHARE_APPROVALS_DIR)
+			.expect("`--reshare-approvals-dir` is a required arg")
 			.clone()
 	}
 
@@ -1498,6 +1588,16 @@ impl ClientRunner {
 					handlers::get_ephemeral_key_hex(&self.opts);
 				}
 				Command::PostShare => handlers::post_share(&self.opts),
+				Command::ProvideQuorumKeyEnvelope => {
+					handlers::provide_quorum_key_envelope(&self.opts);
+				}
+				Command::ApproveReshare => {
+					handlers::approve_reshare(&self.opts);
+				}
+				Command::ReshareQuorumKey => {
+					handlers::reshare_quorum_key(&self.opts);
+				}
+				Command::AfterReshare => handlers::after_reshare(&self.opts),
 				Command::DangerousDevBoot => {
 					handlers::dangerous_dev_boot(&self.opts);
 				}
@@ -1693,6 +1793,70 @@ mod handlers {
 			validation_time_override: opts.validation_time_override(),
 		}) {
 			println!("Error: {e:?}");
+			std::process::exit(1);
+		}
+	}
+
+	pub(super) fn after_reshare(opts: &ClientOpts) {
+		let pair = get_pair_or_yubi(opts);
+		if let Err(e) = services::after_reshare(services::AfterReshareArgs {
+			holder: services::AfterGenesisArgs {
+				pair,
+				share_path: opts.share_path(),
+				alias: opts.alias(),
+				namespace_dir: opts.namespace_dir(),
+				qos_release_dir_path: opts.qos_release_dir(),
+				pcr3_preimage_path: opts.pcr3_preimage_path(),
+				unsafe_skip_attestation: opts.unsafe_skip_attestation(),
+				validation_time_override: opts.validation_time_override(),
+			},
+			quorum_key_path: opts
+				.quorum_key_path_optional()
+				.expect("`--quorum-key-path` is a required arg"),
+			share_set_dir: opts.share_set_dir(),
+		}) {
+			println!("Error: {e:?}");
+			std::process::exit(1);
+		}
+	}
+
+	pub(super) fn provide_quorum_key_envelope(opts: &ClientOpts) {
+		if let Err(e) = services::provide_quorum_key_envelope(
+			&opts.path_message(),
+			opts.quorum_key_envelope_path(),
+		) {
+			eprintln!("Error: {e:?}");
+			std::process::exit(1);
+		}
+	}
+
+	pub(super) fn approve_reshare(opts: &ClientOpts) {
+		let pair = get_pair_or_yubi(opts);
+		if let Err(e) =
+			services::approve_reshare(services::ApproveReshareArgs {
+				pair,
+				alias: opts.alias(),
+				manifest_path: opts.manifest_path(),
+				share_set_dir: opts.share_set_dir(),
+				approval_path: opts.approval_path(),
+			}) {
+			eprintln!("Error: {e:?}");
+			std::process::exit(1);
+		}
+	}
+
+	pub(super) fn reshare_quorum_key(opts: &ClientOpts) {
+		if let Err(e) =
+			services::reshare_quorum_key(services::ReshareQuorumKeyArgs {
+				uri: &opts.path_message(),
+				share_set_dir: opts.share_set_dir(),
+				reshare_approvals_dir: opts.reshare_approvals_dir(),
+				namespace_dir: opts.namespace_dir(),
+				qos_release_dir_path: opts.qos_release_dir(),
+				pcr3_preimage_path: opts.pcr3_preimage_path(),
+				unsafe_skip_attestation: opts.unsafe_skip_attestation(),
+			}) {
+			eprintln!("Error: {e:?}");
 			std::process::exit(1);
 		}
 	}

@@ -3,9 +3,9 @@
 use crate::protocol::{
 	Hash256,
 	services::boot::{
-		BridgeConfig, Manifest, ManifestSet, Namespace, NitroConfig, PatchSet,
-		PivotConfig, PivotConfigV2, PivotEnv, RestartPolicy, ShareGroup,
-		ShareSet,
+		BridgeConfig, KeyDigests, Manifest, ManifestSet, Namespace,
+		NitroConfig, PatchSet, PivotConfig, PivotConfigV2, PivotEnv,
+		RestartPolicy, ShareSet,
 	},
 };
 
@@ -49,9 +49,17 @@ pub enum ManifestBuilderError {
 	/// A v1 manifest cannot boot without a quorum key.
 	#[error("manifest v1 does not support booting without a quorum key")]
 	V1DoesNotSupportNoQuorumKey,
-	/// A v1 manifest's share set is flat: it cannot hold share groups.
-	#[error("manifest v1 does not support share groups")]
-	V1DoesNotSupportShareGroups,
+	/// A v1 manifest's share set is flat: it cannot name a holder tree.
+	#[error("manifest v1 does not support a holder tree")]
+	V1DoesNotSupportShareHolders,
+	/// A v2 manifest names a holder tree, not a flat share set.
+	#[error("manifest v2 takes share holders, not a flat share set")]
+	V2DoesNotSupportFlatShareSet,
+	/// A manifest set member or the app key minter is not a hybrid public key.
+	#[error(
+		"a manifest set member or the app key minter is not a hybrid public key"
+	)]
+	InvalidMemberKey,
 }
 
 /// Builds a versioned manifest using either the v1 or v2 schema.
@@ -72,7 +80,7 @@ pub struct ManifestBuilder {
 	pivot_env: Option<PivotEnv>,
 	manifest_set: Option<ManifestSet>,
 	share_set: Option<ShareSet>,
-	share_groups: Vec<ShareGroup>,
+	share_holders: Option<ShareSetV2>,
 	enclave: Option<NitroConfig>,
 	patch_set: Option<PatchSet>,
 	dns: Option<DnsConfig>,
@@ -101,7 +109,7 @@ impl ManifestBuilder {
 			pivot_env: None,
 			manifest_set: None,
 			share_set: None,
-			share_groups: Vec::new(),
+			share_holders: None,
 			enclave: None,
 			patch_set: None,
 			dns: None,
@@ -185,18 +193,18 @@ impl ManifestBuilder {
 		self
 	}
 
-	/// Set the share approval set.
+	/// Set the flat share set (v1 only).
 	#[must_use]
 	pub fn share_set(mut self, share_set: ShareSet) -> Self {
 		self.share_set = Some(share_set);
 		self
 	}
 
-	/// Add groups to the share set, after its members (v2 only). The share
-	/// set's threshold then counts satisfied groups alongside its members.
+	/// Set the holder tree and quorum key envelope digest (v2 only). A v2 manifest without a
+	/// quorum key needs none.
 	#[must_use]
-	pub fn share_groups(mut self, share_groups: Vec<ShareGroup>) -> Self {
-		self.share_groups = share_groups;
+	pub fn share_holders(mut self, share_holders: ShareSetV2) -> Self {
+		self.share_holders = Some(share_holders);
 		self
 	}
 
@@ -251,8 +259,6 @@ impl ManifestBuilder {
 		let manifest_set = self
 			.manifest_set
 			.ok_or(ManifestBuilderError::MissingManifestSet)?;
-		let share_set =
-			self.share_set.ok_or(ManifestBuilderError::MissingShareSet)?;
 		let enclave =
 			self.enclave.ok_or(ManifestBuilderError::MissingEnclave)?;
 
@@ -279,11 +285,14 @@ impl ManifestBuilder {
 						ManifestBuilderError::V1DoesNotSupportNoQuorumKey,
 					);
 				}
-				if !self.share_groups.is_empty() {
+				if self.share_holders.is_some() {
 					return Err(
-						ManifestBuilderError::V1DoesNotSupportShareGroups,
+						ManifestBuilderError::V1DoesNotSupportShareHolders,
 					);
 				}
+				let share_set = self
+					.share_set
+					.ok_or(ManifestBuilderError::MissingShareSet)?;
 				let patch_set = self
 					.patch_set
 					.ok_or(ManifestBuilderError::MissingPatchSet)?;
@@ -307,6 +316,18 @@ impl ManifestBuilder {
 				if self.patch_set.is_some() {
 					return Err(ManifestBuilderError::V2DoesNotSupportPatchSet);
 				}
+				if self.share_set.is_some() {
+					return Err(
+						ManifestBuilderError::V2DoesNotSupportFlatShareSet,
+					);
+				}
+				let share_set = match (self.share_holders, self.no_quorum_key) {
+					(Some(holders), _) => holders,
+					(None, true) => ShareSetV2::default(),
+					(None, false) => {
+						return Err(ManifestBuilderError::MissingShareSet);
+					}
+				};
 
 				Ok(VersionedManifest::V2(ManifestV2 {
 					version: ManifestVersion::V2,
@@ -319,14 +340,17 @@ impl ManifestBuilder {
 						args,
 						env: self.pivot_env.unwrap_or_default(),
 					},
-					manifest_set,
-					share_set: ShareSetV2 {
-						groups: self.share_groups,
-						..share_set.into()
-					},
+					manifest_set: (&manifest_set)
+						.try_into()
+						.map_err(|_| ManifestBuilderError::InvalidMemberKey)?,
+					share_set,
 					enclave,
 					dns: self.dns,
-					app_key_minter: self.app_key_minter,
+					app_key_minter: self
+						.app_key_minter
+						.map(|key| KeyDigests::of(&key))
+						.transpose()
+						.map_err(|_| ManifestBuilderError::InvalidMemberKey)?,
 					no_quorum_key: self.no_quorum_key,
 				}))
 			}

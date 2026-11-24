@@ -342,8 +342,8 @@ mod tests {
 		use crate::{
 			handles::Handles,
 			protocol::services::boot::{
-				ManifestBuilder, ManifestSet, Namespace, NitroConfig, ShareSet,
-				VersionedManifest, VersionedManifestEnvelope,
+				ManifestBuilder, ManifestSet, Namespace, NitroConfig,
+				ShareSetV2, VersionedManifest, VersionedManifestEnvelope,
 				manifest::v2::ManifestEnvelopeV2,
 			},
 		};
@@ -381,7 +381,7 @@ mod tests {
 				})
 				.pivot_hash([0; 32])
 				.manifest_set(ManifestSet::default())
-				.share_set(ShareSet { threshold: 0, members: Vec::new() })
+				.share_holders(ShareSetV2::default())
 				.enclave(NitroConfig::default());
 			let builder = if minter {
 				builder.app_key_minter(

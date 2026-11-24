@@ -13,7 +13,11 @@ use integration::{LOCAL_HOST, PCR3_PRE_IMAGE_PATH, QOS_DIST_DIR};
 use qos_core::protocol::{
 	ProtocolPhase,
 	services::{
-		boot::{Approval, ManifestSet, Namespace, ShareSet, VersionedManifest},
+		boot::{
+			Approval, ManifestSet, ManifestSetV2, Namespace, ShareSet,
+			ShareSetV2, VersionedManifest,
+		},
+		envelope::QuorumKeyEnvelope,
 		genesis::{GenesisMemberOutput, GenesisOutput},
 	},
 };
@@ -130,9 +134,16 @@ async fn main() {
 	};
 	assert_eq!(*manifest.namespace(), namespace_field);
 	let manifest_set = ManifestSet { threshold: 2, members: members.clone() };
-	assert_eq!(*manifest.manifest_set(), manifest_set);
-	let share_set = ShareSet { threshold: 2, members };
-	assert_eq!(*manifest.share_set(), share_set.into());
+	assert_eq!(
+		manifest.manifest_set().unwrap().normalised(),
+		ManifestSetV2::try_from(&manifest_set).unwrap().normalised()
+	);
+	let envelope = QuorumKeyEnvelope::decode(&genesis_output.envelope).unwrap();
+	let holders = ShareSetV2 {
+		envelope_digest: Some(envelope.digest().to_vec()),
+		..ShareSet { threshold: 2, members }.try_into().unwrap()
+	};
+	assert_eq!(manifest.share_set(), Some(&holders));
 
 	// -- CLIENT make sure each user can run `approve-manifest`
 	for alias in [user1, user2, user3] {

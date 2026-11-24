@@ -7,23 +7,12 @@ use thiserror::Error;
 
 pub mod n_choose_k;
 pub mod shamir;
-pub mod share_tree;
 
 /// Errors for this crate
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum QosCryptoError {
 	/// Errors from vsss-rs lib
 	Vsss(vsss_rs::Error),
-	/// A share tree breaks a structural rule.
-	InvalidShareTree(&'static str),
-	/// The share list does not have one entry per leaf of the share tree.
-	ShareCountMismatch,
-	/// A share's identifier is not the position of the leaf it was given for.
-	ShareIdentifierMismatch,
-	/// Shares differ in length or carry no secret.
-	ShareLengthMismatch,
-	/// The shares do not satisfy the share tree's root.
-	ThresholdNotMet,
 }
 
 impl fmt::Display for QosCryptoError {

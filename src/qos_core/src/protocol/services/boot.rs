@@ -18,13 +18,17 @@ pub use env::{
 	PivotEnv, PivotEnvValue, PivotEnvVarName,
 };
 pub use manifest::v2::{
-	DnsConfig, ManifestEnvelopeV2, ManifestV2, PivotConfigV2, ShareSetV2,
+	DnsConfig, ManifestEnvelopeV2, ManifestSetV2, ManifestV2, PivotConfigV2,
+	ShareSetV2,
 };
 pub use manifest::{
 	ManifestBuilder, ManifestBuilderError, ManifestVersion, VersionedManifest,
 	VersionedManifestEnvelope,
 };
-pub use share_tree::{ShareGroup, ShareNode};
+pub use share_tree::{
+	KeyDigests, MemberDigest, ShareGroup, ShareHolderGroup, ShareHolderNode,
+	ShareNode, member_digests,
+};
 
 fn decode_borsh<T, U, V>(
 	buf: &[u8],
@@ -746,15 +750,20 @@ pub(in crate::protocol::services) fn put_manifest_and_pivot(
 	if !manifest_envelope.share_set_approvals().is_empty() {
 		return Err(ProtocolError::BadShareSetApprovals);
 	}
-	if let Some(minter) = manifest_envelope.app_key_minter() {
-		HybridPublic::from_bytes(minter)
-			.map_err(|_| ProtocolError::InvalidAppKeyMinter)?;
+	if let Some(minter) = manifest_envelope.app_key_minter()
+		&& (minter.receiving_key_digest.len() != 48
+			|| minter.signing_key_digest.len() != 48)
+	{
+		return Err(ProtocolError::InvalidAppKeyMinter);
 	}
 	if manifest_envelope.no_quorum_key() {
 		if !manifest_envelope.namespace().quorum_key.is_empty() {
 			return Err(ProtocolError::NoQuorumKeyManifestNamesQuorumKey);
 		}
-		if !manifest_envelope.share_set().is_empty() {
+		if manifest_envelope
+			.share_set()
+			.is_some_and(|set| !set.is_empty() || set.envelope_digest.is_some())
+		{
 			return Err(ProtocolError::NoQuorumKeyManifestHasShareSet);
 		}
 	}

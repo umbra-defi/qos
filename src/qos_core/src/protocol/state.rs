@@ -175,11 +175,31 @@ impl ProtocolRoute {
 		)
 	}
 
-	pub fn provision(_current_phase: ProtocolPhase) -> Self {
+	// A refused shard leaves the boot waiting for shards: a holder's retry, a
+	// stray post or a bad shard must not spend the boot.
+	pub fn provision(current_phase: ProtocolPhase) -> Self {
 		ProtocolRoute::new(
 			Box::new(handlers::provision),
 			ProtocolPhase::QuorumKeyProvisioned,
-			ProtocolPhase::UnrecoverableError,
+			current_phase,
+		)
+	}
+
+	// A refused envelope leaves the boot waiting for the right one.
+	pub fn provide_quorum_key_envelope(current_phase: ProtocolPhase) -> Self {
+		ProtocolRoute::new(
+			Box::new(handlers::provide_quorum_key_envelope),
+			current_phase,
+			current_phase,
+		)
+	}
+
+	// A reshare, done or refused, leaves the enclave provisioned.
+	pub fn reshare_quorum_key(current_phase: ProtocolPhase) -> Self {
+		ProtocolRoute::new(
+			Box::new(handlers::reshare_quorum_key),
+			current_phase,
+			current_phase,
 		)
 	}
 
@@ -391,6 +411,7 @@ impl ProtocolState {
 					ProtocolRoute::live_attestation_doc(self.phase),
 					ProtocolRoute::manifest_envelope(self.phase),
 					// phase specific routes
+					ProtocolRoute::provide_quorum_key_envelope(self.phase),
 					ProtocolRoute::provision(self.phase),
 				]
 			}
@@ -404,6 +425,7 @@ impl ProtocolState {
 					// phase specific routes
 					ProtocolRoute::export_key(self.phase),
 					ProtocolRoute::export_app_key(self.phase),
+					ProtocolRoute::reshare_quorum_key(self.phase),
 				]
 			}
 			ProtocolPhase::WaitingForForwardedKey => {
@@ -512,7 +534,7 @@ mod handlers {
 		msg::ProtocolMsg,
 		services::{
 			app_key, app_key::Settled, attestation, boot, genesis, key,
-			key::EncryptedQuorumKey, provision,
+			key::EncryptedQuorumKey, provision, reshare,
 		},
 	};
 
@@ -574,6 +596,41 @@ mod handlers {
 				.map_err(ProtocolMsg::ProtocolErrorResponse);
 
 			Some(result)
+		} else {
+			None
+		}
+	}
+
+	pub(super) fn reshare_quorum_key(
+		req: &ProtocolMsg,
+		state: &mut ProtocolState,
+	) -> ProtocolRouteResponse {
+		if let ProtocolMsg::ReshareQuorumKeyRequest { set, approvals } = req {
+			Some(
+				reshare::reshare_quorum_key(state, set, approvals)
+					.map(|(output, nsm_response)| {
+						ProtocolMsg::ReshareQuorumKeyResponse {
+							nsm_response,
+							output: Box::new(output),
+						}
+					})
+					.map_err(ProtocolMsg::ProtocolErrorResponse),
+			)
+		} else {
+			None
+		}
+	}
+
+	pub(super) fn provide_quorum_key_envelope(
+		req: &ProtocolMsg,
+		state: &mut ProtocolState,
+	) -> ProtocolRouteResponse {
+		if let ProtocolMsg::ProvideQuorumKeyEnvelopeRequest { envelope } = req {
+			Some(
+				provision::provide_quorum_key_envelope(envelope, state)
+					.map(|()| ProtocolMsg::ProvideQuorumKeyEnvelopeResponse)
+					.map_err(ProtocolMsg::ProtocolErrorResponse),
+			)
 		} else {
 			None
 		}
@@ -747,11 +804,19 @@ mod handlers {
 		req: &ProtocolMsg,
 		state: &mut ProtocolState,
 	) -> ProtocolRouteResponse {
-		if let ProtocolMsg::MintAppKeyRequest { order_signature } = req {
+		if let ProtocolMsg::MintAppKeyRequest {
+			order_signature,
+			minter_public_key,
+		} = req
+		{
 			Some(
-				app_key::mint_app_key(state, order_signature)
-					.map(|()| ProtocolMsg::MintAppKeyResponse)
-					.map_err(ProtocolMsg::ProtocolErrorResponse),
+				app_key::mint_app_key(
+					state,
+					order_signature,
+					minter_public_key,
+				)
+				.map(|()| ProtocolMsg::MintAppKeyResponse)
+				.map_err(ProtocolMsg::ProtocolErrorResponse),
 			)
 		} else {
 			None

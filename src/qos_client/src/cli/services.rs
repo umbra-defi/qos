@@ -15,16 +15,19 @@ use qos_core::protocol::{
 	services::{
 		app_key::{EncryptedAppKey, app_key_mint_order_message},
 		boot::{
-			Approval, BridgeConfig, DnsConfig, Manifest as ManifestV1,
-			ManifestBuilder, ManifestBuilderError,
+			Approval, BridgeConfig, DnsConfig, KeyDigests,
+			Manifest as ManifestV1, ManifestBuilder, ManifestBuilderError,
 			ManifestEnvelope as ManifestEnvelopeV1, ManifestEnvelopeV0,
-			ManifestEnvelopeV2, ManifestSet, ManifestVersion, MemberPubKey,
-			Namespace, NitroConfig, PatchSet, PivotConfig as PivotConfigV1,
-			QuorumMember, RestartPolicy, ShareGroup, ShareNode, ShareSet,
-			ShareSetV2, VersionedManifest, VersionedManifestEnvelope,
+			ManifestEnvelopeV2, ManifestSet, ManifestSetV2, ManifestVersion,
+			MemberPubKey, Namespace, NitroConfig, PatchSet,
+			PivotConfig as PivotConfigV1, QuorumMember, RestartPolicy,
+			ShareGroup, ShareHolderNode, ShareNode, ShareSet, ShareSetV2,
+			VersionedManifest, VersionedManifestEnvelope,
 		},
+		envelope::QuorumKeyEnvelope,
 		genesis::{GenesisOutput, GenesisSet},
 		key::EncryptedQuorumKey,
+		reshare::{ReshareOutput, reshare_digest},
 	},
 };
 use qos_crypto::{sha_256, sha_384, sha_512};
@@ -46,6 +49,9 @@ use crate::request;
 const PUB_EXT: &str = "pub";
 const GENESIS_ATTESTATION_DOC_FILE: &str = "genesis_attestation_doc";
 const GENESIS_OUTPUT_FILE: &str = "genesis_output";
+const QUORUM_KEY_ENVELOPE_FILE: &str = "quorum_key.envelope";
+const RESHARE_OUTPUT_FILE: &str = "reshare_output";
+const RESHARE_ATTESTATION_DOC_FILE: &str = "reshare_attestation_doc";
 const MANIFEST_ENVELOPE: &str = "manifest_envelope";
 const APPROVAL_EXT: &str = "approval";
 const QUORUM_THRESHOLD_FILE: &str = "quorum_threshold";
@@ -160,6 +166,24 @@ pub enum Error {
 	/// A manifest with a quorum key needs both its quorum key and its share
 	/// set.
 	MissingQuorumKeyOrShareSet,
+	/// The quorum key envelope beside the quorum key could not be read or decoded.
+	FailedToReadQuorumKeyEnvelope(String),
+	/// The quorum key envelope was dealt over another holder tree than the share
+	/// set directory's.
+	QuorumKeyEnvelopeNotForShareSet,
+	/// A v1/v0 manifest's share set is flat: it cannot hold groups.
+	ManifestV1DoesNotSupportShareGroups,
+	/// The share set is not a valid holder tree, or a key in it is not a hybrid
+	/// key.
+	InvalidShareSet(qos_core::protocol::ProtocolError),
+	/// The reshare output seals another quorum key than the one expected.
+	ReshareOutputNotForQuorumKey,
+	/// The reshare output deals over another holder tree than the one approved.
+	ReshareOutputNotForShareSet,
+	/// The reshare output holds no shard for this member's key and alias.
+	NotAReshareHolder,
+	/// The member's decrypted shard is not the one the reshare output names.
+	ReshareShardDoesNotMatch,
 	/// The manifest names no app key minter, so it has no app key to mint.
 	ManifestNamesNoAppKeyMinter,
 	/// The master seed is not the manifest's app key minter.
@@ -193,6 +217,12 @@ impl From<borsh::io::Error> for Error {
 impl From<ManifestBuilderError> for Error {
 	fn from(err: ManifestBuilderError) -> Self {
 		Self::ManifestBuilder(err)
+	}
+}
+
+impl From<qos_core::protocol::ProtocolError> for Error {
+	fn from(err: qos_core::protocol::ProtocolError) -> Self {
+		Self::InvalidShareSet(err)
 	}
 }
 
@@ -425,6 +455,30 @@ pub(crate) struct BootGenesisArgs<'a, P: AsRef<Path>> {
 	pub dr_key_path: Option<P>,
 }
 
+/// Checks a genesis output deals one shard per member of the whole tree, in its
+/// order, and an envelope dealt over that tree.
+fn check_genesis_output(
+	genesis_set: &GenesisSet,
+	genesis_output: &GenesisOutput,
+) -> Result<(), Error> {
+	let leaves = genesis_set.leaves();
+	assert!(
+		leaves.len() == genesis_output.member_outputs.len()
+			&& leaves
+				.iter()
+				.zip(&genesis_output.member_outputs)
+				.all(|(member, member_out)| **member
+					== member_out.share_set_member),
+		"Output of genesis ceremony does not have same members as Genesis Set"
+	);
+	let envelope = QuorumKeyEnvelope::decode(&genesis_output.envelope)
+		.map_err(|e| Error::FailedToReadQuorumKeyEnvelope(format!("{e}")))?;
+	if genesis_set.holder_set()?.tree()?.digest().0 != envelope.tree_digest {
+		return Err(Error::QuorumKeyEnvelopeNotForShareSet);
+	}
+	Ok(())
+}
+
 pub(crate) fn boot_genesis<P: AsRef<Path>>(
 	BootGenesisArgs {
 		uri,
@@ -469,17 +523,7 @@ pub(crate) fn boot_genesis<P: AsRef<Path>>(
 
 	let qos_pcrs = extract_qos_pcrs(qos_release_dir_path);
 
-	// Sanity check the genesis output
-	assert!(
-		genesis_set.members.len() == genesis_output.member_outputs.len(),
-		"Output of genesis ceremony does not have same members as Genesis Set"
-	);
-	assert!(
-		genesis_output.member_outputs.iter().all(|member_out| genesis_set
-			.members
-			.contains(&member_out.share_set_member)),
-		"Output of genesis ceremony does not have same members as Genesis Set"
-	);
+	check_genesis_output(&genesis_set, &genesis_output)?;
 
 	// Check the attestation document
 	if unsafe_skip_attestation {
@@ -536,6 +580,14 @@ pub(crate) fn boot_genesis<P: AsRef<Path>>(
 		&quorum_key_path,
 		&quorum_key.to_hex_bytes(),
 		"quorum_key.pub",
+	);
+
+	// Write the quorum key envelope beside it, where generate-manifest and
+	// approve-manifest read it
+	write_with_msg(
+		&namespace_dir.as_ref().join(QUORUM_KEY_ENVELOPE_FILE),
+		&genesis_output.envelope,
+		QUORUM_KEY_ENVELOPE_FILE,
 	);
 
 	if let Some(dr_wrapped_quorum_key) =
@@ -696,26 +748,45 @@ pub(crate) fn after_genesis<P: AsRef<Path>>(
 		})
 		.expect("Could not find a member output associated with the setup key");
 
-	// Make sure we can decrypt the Share with the Personal Key
-	let plaintext_share =
-		pair.decrypt(&member_output.encrypted_quorum_key_share)?;
-
+	// Make sure we can decrypt the shard with the Personal Key, and that it
+	// belongs to the envelope this genesis dealt
+	let plaintext_shard = pair.decrypt(&member_output.encrypted_shard)?;
 	assert_eq!(
-		sha_512(&plaintext_share),
-		member_output.share_hash,
-		"Expected share hash do not match the actual share hash"
+		sha_512(&plaintext_shard),
+		member_output.shard_hash,
+		"Expected shard hash do not match the actual shard hash"
 	);
+	let envelope = QuorumKeyEnvelope::decode(&genesis_output.envelope)
+		.expect("after_genesis: the genesis output's envelope does not decode");
+	assert_eq!(
+		&plaintext_shard[..envelope.deal_id.0.len()],
+		&envelope.deal_id.0[..],
+		"The shard belongs to another deal than the genesis output's envelope"
+	);
+	drop(plaintext_shard);
 
-	drop(plaintext_share);
-
-	// Store the encrypted share
+	// Store the encrypted shard, and the holder's own copy of the envelope
+	// beside it
 	write_with_msg(
 		share_path.as_ref(),
-		&member_output.encrypted_quorum_key_share,
-		"Encrypted Quorum Share",
+		&member_output.encrypted_shard,
+		"Encrypted envelope key shard",
+	);
+	write_with_msg(
+		&envelope_copy_path(share_path.as_ref()),
+		&genesis_output.envelope,
+		"Quorum key envelope",
 	);
 
 	Ok(())
+}
+
+/// Where a holder keeps its copy of the quorum key envelope: beside its shard,
+/// as `<shard>.envelope`.
+fn envelope_copy_path(share_path: &Path) -> PathBuf {
+	let mut path = share_path.as_os_str().to_owned();
+	path.push(".envelope");
+	PathBuf::from(path)
 }
 
 pub(crate) struct GenerateManifestArgs<P: AsRef<Path>> {
@@ -738,9 +809,28 @@ pub(crate) struct GenerateManifestArgs<P: AsRef<Path>> {
 	pub no_quorum_key: bool,
 }
 
-/// The namespace quorum key and the share set a manifest names: both from
-/// their files, or, for a manifest that boots without a quorum key, none and
-/// an empty set.
+/// The quorum key envelope genesis writes beside `quorum_key.pub`, as
+/// [`QUORUM_KEY_ENVELOPE_FILE`].
+fn read_quorum_key_envelope(
+	quorum_key_path: &Path,
+) -> Result<QuorumKeyEnvelope, Error> {
+	let path = quorum_key_path
+		.parent()
+		.unwrap_or_else(|| Path::new("."))
+		.join(QUORUM_KEY_ENVELOPE_FILE);
+	let bytes = fs::read(&path).map_err(|e| {
+		Error::FailedToReadQuorumKeyEnvelope(format!("{}: {e}", path.display()))
+	})?;
+	QuorumKeyEnvelope::decode(&bytes).map_err(|e| {
+		Error::FailedToReadQuorumKeyEnvelope(format!("{}: {e}", path.display()))
+	})
+}
+
+/// The namespace quorum key and the holder tree a v2 manifest names: the key
+/// from its file, the tree from the share set directory's keys, and the
+/// envelope digest from the envelope beside the key, which must have been dealt
+/// over that tree. A manifest that boots without a quorum key names none and an
+/// empty set.
 fn quorum_key_and_share_set<P: AsRef<Path>>(
 	no_quorum_key: bool,
 	quorum_key_path: Option<P>,
@@ -752,10 +842,45 @@ fn quorum_key_and_share_set<P: AsRef<Path>>(
 		(false, Some(quorum_key_path), Some(share_set_dir)) => {
 			let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
 				.map_err(Error::FailedToReadQuorumPublicKey)?;
-			Ok((quorum_key.to_bytes(), get_share_set(share_set_dir)))
+			let envelope = read_quorum_key_envelope(quorum_key_path.as_ref())?;
+			let mut holders = get_genesis_set(share_set_dir).holder_set()?;
+			if holders.tree()?.digest().0 != envelope.tree_digest {
+				return Err(Error::QuorumKeyEnvelopeNotForShareSet);
+			}
+			holders.envelope_digest = Some(envelope.digest().to_vec());
+			Ok((quorum_key.to_bytes(), holders))
 		}
 		(false, _, _) => Err(Error::MissingQuorumKeyOrShareSet),
 	}
+}
+
+/// The quorum key and the flat share set a v1 manifest names.
+fn quorum_key_and_flat_share_set<P: AsRef<Path>>(
+	quorum_key_path: Option<P>,
+	share_set_dir: Option<P>,
+) -> Result<(Vec<u8>, ShareSet), Error> {
+	let (Some(quorum_key_path), Some(share_set_dir)) =
+		(quorum_key_path, share_set_dir)
+	else {
+		return Err(Error::MissingQuorumKeyOrShareSet);
+	};
+	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
+		.map_err(Error::FailedToReadQuorumPublicKey)?;
+	let set = get_genesis_set(share_set_dir);
+	if !set.groups.is_empty() {
+		return Err(Error::ManifestV1DoesNotSupportShareGroups);
+	}
+	Ok((
+		quorum_key.to_bytes(),
+		ShareSet { threshold: set.threshold, members: set.members },
+	))
+}
+
+/// The share set a manifest must name for an approver: a v2 manifest's holder
+/// tree, or a v1 or v0 manifest's flat set.
+pub(crate) enum ExpectedShareSet {
+	Holders(ShareSetV2),
+	Flat(ShareSet),
 }
 
 pub(crate) fn generate_manifest<P: AsRef<Path>>(
@@ -802,7 +927,7 @@ pub(crate) fn generate_manifest<P: AsRef<Path>>(
 	};
 	let patch_set = get_patch_set(patch_set_dir);
 	let (quorum_key, share_set) =
-		quorum_key_and_share_set(false, quorum_key_path, share_set_dir)?;
+		quorum_key_and_flat_share_set(quorum_key_path, share_set_dir)?;
 
 	let manifest = ManifestBuilder::new()
 		.with_version(ManifestVersion::V1)
@@ -813,11 +938,7 @@ pub(crate) fn generate_manifest<P: AsRef<Path>>(
 		.bridge_config(bridge_config)
 		.debug_mode(debug_mode)
 		.manifest_set(manifest_set)
-		.share_set(ShareSet {
-			threshold: share_set.threshold,
-			members: share_set.members,
-		})
-		.share_groups(share_set.groups)
+		.share_set(share_set)
 		.patch_set(patch_set)
 		.enclave(nitro_config)
 		.build()?;
@@ -876,11 +997,7 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 		.bridge_config(bridge_config)
 		.debug_mode(debug_mode)
 		.manifest_set(manifest_set)
-		.share_set(ShareSet {
-			threshold: share_set.threshold,
-			members: share_set.members,
-		})
-		.share_groups(share_set.groups)
+		.share_holders(share_set)
 		.enclave(nitro_config);
 	let manifest = match dns_resolvers {
 		Some(resolvers) => manifest.dns(DnsConfig { resolvers }),
@@ -965,7 +1082,9 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 	let expected_minter = app_key_minter_path
 		.map(|path| HybridPublic::from_hex_file(path).map(|key| key.to_bytes()))
 		.transpose()?;
-	if manifest.app_key_minter() != expected_minter.as_deref() {
+	let expected_minter =
+		expected_minter.map(|key| KeyDigests::of(&key)).transpose()?;
+	if manifest.app_key_minter() != expected_minter.as_ref() {
 		eprintln!("App key minter does not match");
 		eprintln!("Exiting early without approving manifest");
 		std::process::exit(1);
@@ -977,11 +1096,18 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 		eprintln!("Exiting early without approving manifest");
 		std::process::exit(1);
 	}
-	let (quorum_key, share_set) = quorum_key_and_share_set(
-		no_quorum_key,
-		quorum_key_path,
-		share_set_dir,
-	)?;
+	let (quorum_key, share_set) = if let VersionedManifest::V2(_) = &manifest {
+		let (quorum_key, holders) = quorum_key_and_share_set(
+			no_quorum_key,
+			quorum_key_path,
+			share_set_dir,
+		)?;
+		(quorum_key, ExpectedShareSet::Holders(holders))
+	} else {
+		let (quorum_key, flat) =
+			quorum_key_and_flat_share_set(quorum_key_path, share_set_dir)?;
+		(quorum_key, ExpectedShareSet::Flat(flat))
+	};
 	let patch_set = match (&manifest, patch_set_dir) {
 		(VersionedManifest::V2(_), Some(_)) => {
 			return Err(Error::ManifestV2DoesNotSupportPatchSet);
@@ -1045,27 +1171,42 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 fn approve_manifest_programmatic_verifications(
 	manifest: &VersionedManifest,
 	manifest_set: &ManifestSet,
-	share_set: &ShareSetV2,
+	share_set: &ExpectedShareSet,
 	patch_set: Option<&PatchSet>,
 	nitro_config: &NitroConfig,
 	pivot_hash: &[u8],
 	quorum_key: &[u8],
 ) -> bool {
 	// Verify manifest set composition
-	if manifest.manifest_set() != manifest_set {
+	if !names_manifest_set(manifest, manifest_set) {
 		eprintln!("Manifest Set composition does not match");
 		return false;
 	}
 
-	// Verify share set composition
-	if *manifest.share_set() != *share_set {
+	// Verify share set composition: a v2 manifest's holder tree and envelope
+	// digest, or a v1 or v0 manifest's flat set
+	let share_set_matches = match (manifest, share_set) {
+		(
+			VersionedManifest::V2(manifest),
+			ExpectedShareSet::Holders(holders),
+		) => manifest.share_set == *holders,
+		(VersionedManifest::V1(manifest), ExpectedShareSet::Flat(flat)) => {
+			manifest.share_set == *flat
+		}
+		(VersionedManifest::V0(manifest), ExpectedShareSet::Flat(flat)) => {
+			manifest.share_set == *flat
+		}
+		_ => false,
+	};
+	if !share_set_matches {
 		eprintln!("Share Set composition does not match");
 		return false;
 	}
-	if !manifest.no_quorum_key()
-		&& let Err(e) = share_set.validate()
+	if let (false, ExpectedShareSet::Holders(holders)) =
+		(manifest.no_quorum_key(), share_set)
+		&& let Err(e) = holders.tree()
 	{
-		eprintln!("Share Set is not a valid share tree: {e}");
+		eprintln!("Share Set is not a valid holder tree: {e}");
 		return false;
 	}
 
@@ -1506,7 +1647,8 @@ pub(crate) fn sign_app_key_mint_order<P: AsRef<Path>>(
 		.app_key_minter()
 		.ok_or(Error::ManifestNamesNoAppKeyMinter)?;
 	let minter_pair = HybridPair::from_hex_file(master_seed_path)?;
-	if minter_pair.public_key().to_bytes() != minter {
+	let minter_public_key = minter_pair.public_key().to_bytes();
+	if !minter.names(&minter_public_key) {
 		return Err(Error::NotTheAppKeyMinter);
 	}
 
@@ -1525,7 +1667,12 @@ pub(crate) fn sign_app_key_mint_order<P: AsRef<Path>>(
 	))?;
 	write_with_msg(
 		order_path.as_ref(),
-		qos_hex::encode(&order).as_bytes(),
+		format!(
+			"{}\n{}\n",
+			qos_hex::encode(&order),
+			qos_hex::encode(&minter_public_key)
+		)
+		.as_bytes(),
 		"App key mint order",
 	);
 
@@ -1543,9 +1690,12 @@ pub(crate) fn mint_app_key<P: AsRef<Path>>(
 			error: e.to_string(),
 		}
 	})?;
-	let req = ProtocolMsg::MintAppKeyRequest {
-		order_signature: qos_hex::decode(order.trim())?,
-	};
+	// The order file holds the signature, then the minter's public key.
+	let mut lines = order.lines().map(str::trim);
+	let order_signature = qos_hex::decode(lines.next().unwrap_or_default())?;
+	let minter_public_key = qos_hex::decode(lines.next().unwrap_or_default())?;
+	let req =
+		ProtocolMsg::MintAppKeyRequest { order_signature, minter_public_key };
 
 	match request::post(uri, &req).unwrap() {
 		ProtocolMsg::MintAppKeyResponse => println!("App key minted."),
@@ -1898,6 +2048,19 @@ pub(crate) fn proxy_re_encrypt_share<P: AsRef<Path>>(
 	Ok(())
 }
 
+/// Whether the manifest names `expected`'s members, by key digest, and its
+/// threshold, in any order.
+fn names_manifest_set(
+	manifest: &VersionedManifest,
+	expected: &ManifestSet,
+) -> bool {
+	let Ok(named) = manifest.manifest_set() else {
+		return false;
+	};
+	ManifestSetV2::try_from(expected)
+		.is_ok_and(|expected| expected.normalised() == named.normalised())
+}
+
 fn proxy_re_encrypt_share_programmatic_verifications(
 	manifest_envelope: &VersionedManifestEnvelope,
 	manifest_set: &ManifestSet,
@@ -1910,16 +2073,20 @@ fn proxy_re_encrypt_share_programmatic_verifications(
 		return false;
 	}
 
-	if *manifest.manifest_set() != *manifest_set {
+	if !names_manifest_set(&manifest, manifest_set) {
 		eprintln!(
 			"Manifest's manifest set does not match locally found Manifest Set"
 		);
 		return false;
 	}
 
-	if !manifest.share_set().contains(member) {
+	let is_holder = manifest
+		.share_set()
+		.and_then(|holders| holders.locate(member).ok().flatten())
+		.is_some();
+	if !is_holder {
 		eprintln!(
-			"The provided share set key and alias are not part of the Share Set"
+			"The provided share set key is not a holder of the manifest's Share Set"
 		);
 		return false;
 	}
@@ -2022,6 +2189,279 @@ pub(crate) fn post_share<P: AsRef<Path>>(
 		println!("The quorum key has *not* been reconstructed.");
 	}
 
+	Ok(())
+}
+
+/// Hand a booted enclave the quorum key envelope its manifest names, before
+/// any shard is posted.
+pub(crate) fn provide_quorum_key_envelope<P: AsRef<Path>>(
+	uri: &str,
+	envelope_path: P,
+) -> Result<(), Error> {
+	let envelope = fs::read(envelope_path.as_ref()).map_err(|e| {
+		Error::FailedToReadQuorumKeyEnvelope(format!(
+			"{}: {e}",
+			envelope_path.as_ref().display()
+		))
+	})?;
+	let req = ProtocolMsg::ProvideQuorumKeyEnvelopeRequest { envelope };
+	match request::post(uri, &req).unwrap() {
+		ProtocolMsg::ProvideQuorumKeyEnvelopeResponse => {
+			println!("The enclave holds the quorum key envelope.");
+			Ok(())
+		}
+		r => panic!("Unexpected response: {r:?}"),
+	}
+}
+
+pub(crate) struct ApproveReshareArgs<P: AsRef<Path>> {
+	pub pair: PairOrYubi,
+	pub alias: String,
+	pub manifest_path: P,
+	pub share_set_dir: P,
+	pub approval_path: P,
+}
+
+/// Sign a reshare of the manifest's quorum key to the share set directory's
+/// holder tree, after showing that tree for review.
+pub(crate) fn approve_reshare<P: AsRef<Path>>(
+	ApproveReshareArgs {
+		mut pair,
+		alias,
+		manifest_path,
+		share_set_dir,
+		approval_path,
+	}: ApproveReshareArgs<P>,
+) -> Result<(), Error> {
+	let manifest = read_manifest_compat(&manifest_path)?;
+	let new_set = get_genesis_set(&share_set_dir);
+	new_set.validate()?;
+	println!(
+		"Reshare of {} nonce {}",
+		manifest.namespace().name,
+		manifest.namespace().nonce
+	);
+	print_holder_tree(&new_set);
+	let digest =
+		reshare_digest(&manifest.manifest_hash(), &new_set.holder_set()?)?;
+	let approval = Approval {
+		signature: pair.sign(&digest)?,
+		member: QuorumMember { pub_key: pair.public_key_bytes()?, alias },
+	};
+	write_with_msg(
+		approval_path.as_ref(),
+		&serde_json::to_vec(&approval).expect("Failed to serialize approval"),
+		"Reshare Approval",
+	);
+	Ok(())
+}
+
+fn print_holder_tree(set: &GenesisSet) {
+	fn print_group(group: &ShareGroup, depth: usize) {
+		let children = group.members.len() + group.groups.len();
+		println!(
+			"{}{}: {} of {children}",
+			"  ".repeat(depth),
+			group.alias,
+			group.threshold
+		);
+		for member in &group.members {
+			println!("{}{}", "  ".repeat(depth + 1), member.alias);
+		}
+		for subgroup in &group.groups {
+			print_group(subgroup, depth + 1);
+		}
+	}
+	println!(
+		"new holder tree: {} of {}",
+		set.threshold,
+		set.members.len() + set.groups.len()
+	);
+	for member in &set.members {
+		println!("  {}", member.alias);
+	}
+	for group in &set.groups {
+		print_group(group, 1);
+	}
+}
+
+pub(crate) struct ReshareQuorumKeyArgs<'a, P: AsRef<Path>> {
+	pub uri: &'a str,
+	pub share_set_dir: P,
+	pub reshare_approvals_dir: P,
+	pub namespace_dir: P,
+	pub qos_release_dir_path: P,
+	pub pcr3_preimage_path: P,
+	pub unsafe_skip_attestation: bool,
+}
+
+/// Order a provisioned enclave to reshare its quorum key to the share set
+/// directory's holder tree, check the attested output, and write it to the
+/// namespace directory for the new holders' `after-reshare`.
+pub(crate) fn reshare_quorum_key<P: AsRef<Path>>(
+	ReshareQuorumKeyArgs {
+		uri,
+		share_set_dir,
+		reshare_approvals_dir,
+		namespace_dir,
+		qos_release_dir_path,
+		pcr3_preimage_path,
+		unsafe_skip_attestation,
+	}: ReshareQuorumKeyArgs<P>,
+) -> Result<(), Error> {
+	let set = get_genesis_set(&share_set_dir);
+	let approvals = find_file_paths(&reshare_approvals_dir)
+		.iter()
+		.filter(|path| {
+			split_file_name(path).last().is_some_and(|ext| ext == APPROVAL_EXT)
+		})
+		.map(read_attestation_approval)
+		.collect::<Result<Vec<_>, _>>()?;
+	let req =
+		ProtocolMsg::ReshareQuorumKeyRequest { set: set.clone(), approvals };
+	let (cose_sign1, output) = match request::post_json(uri, &req).unwrap() {
+		ProtocolMsg::ReshareQuorumKeyResponse {
+			nsm_response: NsmResponse::Attestation { document },
+			output,
+		} => (document, output),
+		r => panic!("Unexpected response: {r:?}"),
+	};
+	if output.set != set {
+		return Err(Error::GenesisOutputDoesNotMatchRequest);
+	}
+	let envelope = QuorumKeyEnvelope::decode(&output.envelope)
+		.map_err(|e| Error::FailedToReadQuorumKeyEnvelope(format!("{e}")))?;
+	if set.holder_set()?.tree()?.digest().0 != envelope.tree_digest {
+		return Err(Error::QuorumKeyEnvelopeNotForShareSet);
+	}
+	if unsafe_skip_attestation {
+		println!("**WARNING:** Skipping attestation document verification.");
+	} else {
+		let qos_pcrs = extract_qos_pcrs(qos_release_dir_path);
+		verify_attestation_doc_against_user_input(
+			&extract_attestation_doc(&cose_sign1, false, None),
+			&output.qos_hash(),
+			&qos_pcrs.pcr0,
+			&qos_pcrs.pcr1,
+			&qos_pcrs.pcr2,
+			&extract_pcr3(pcr3_preimage_path),
+		)?;
+	}
+
+	let dir = namespace_dir.as_ref();
+	write_with_msg(
+		&dir.join(RESHARE_OUTPUT_FILE),
+		&borsh::to_vec(&*output).expect("reshare output serializes"),
+		"Reshare Output",
+	);
+	write_with_msg(
+		&dir.join(RESHARE_ATTESTATION_DOC_FILE),
+		&cose_sign1,
+		"Reshare Attestation Doc",
+	);
+	write_with_msg(
+		&dir.join(QUORUM_KEY_ENVELOPE_FILE),
+		&output.envelope,
+		QUORUM_KEY_ENVELOPE_FILE,
+	);
+	Ok(())
+}
+
+pub(crate) struct AfterReshareArgs<P: AsRef<Path>> {
+	pub holder: AfterGenesisArgs<P>,
+	pub quorum_key_path: P,
+	pub share_set_dir: P,
+}
+
+/// A new holder's `after-reshare`: check the attested reshare output seals the
+/// expected quorum key over the approved holder tree, decrypt the holder's
+/// shard, and keep it with a copy of the new envelope.
+pub(crate) fn after_reshare<P: AsRef<Path>>(
+	AfterReshareArgs { holder, quorum_key_path, share_set_dir }: AfterReshareArgs<
+		P,
+	>,
+) -> Result<(), Error> {
+	let AfterGenesisArgs {
+		mut pair,
+		share_path,
+		alias,
+		namespace_dir,
+		qos_release_dir_path,
+		pcr3_preimage_path,
+		unsafe_skip_attestation,
+		validation_time_override,
+	} = holder;
+	let dir = namespace_dir.as_ref();
+	let output = ReshareOutput::try_from_slice(
+		&fs::read(dir.join(RESHARE_OUTPUT_FILE)).map_err(|e| {
+			Error::FailedToReadQuorumKeyEnvelope(format!("reshare output: {e}"))
+		})?,
+	)?;
+	if !unsafe_skip_attestation {
+		let cose_sign1 = fs::read(dir.join(RESHARE_ATTESTATION_DOC_FILE))
+			.map_err(|e| {
+				Error::FailedToReadQuorumKeyEnvelope(format!(
+					"reshare attestation doc: {e}"
+				))
+			})?;
+		let qos_pcrs = extract_qos_pcrs(&qos_release_dir_path);
+		verify_attestation_doc_against_user_input(
+			&extract_attestation_doc(
+				&cose_sign1,
+				false,
+				validation_time_override,
+			),
+			&output.qos_hash(),
+			&qos_pcrs.pcr0,
+			&qos_pcrs.pcr1,
+			&qos_pcrs.pcr2,
+			&extract_pcr3(pcr3_preimage_path),
+		)?;
+	}
+
+	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
+		.map_err(Error::FailedToReadQuorumPublicKey)?;
+	if output.quorum_key != quorum_key.to_bytes() {
+		return Err(Error::ReshareOutputNotForQuorumKey);
+	}
+	if output.set != get_genesis_set(&share_set_dir) {
+		return Err(Error::ReshareOutputNotForShareSet);
+	}
+	let envelope = QuorumKeyEnvelope::decode(&output.envelope)
+		.map_err(|e| Error::FailedToReadQuorumKeyEnvelope(format!("{e}")))?;
+	if output.set.holder_set()?.tree()?.digest().0 != envelope.tree_digest {
+		return Err(Error::QuorumKeyEnvelopeNotForShareSet);
+	}
+
+	let public = pair.public_key_bytes()?;
+	let member_output = output
+		.member_outputs
+		.iter()
+		.find(|m| {
+			m.share_set_member.pub_key == public
+				&& m.share_set_member.alias == alias
+		})
+		.ok_or(Error::NotAReshareHolder)?;
+	let plaintext_shard =
+		Zeroizing::new(pair.decrypt(&member_output.encrypted_shard)?);
+	if sha_512(&plaintext_shard) != member_output.shard_hash
+		|| plaintext_shard.get(..envelope.deal_id.0.len())
+			!= Some(&envelope.deal_id.0[..])
+	{
+		return Err(Error::ReshareShardDoesNotMatch);
+	}
+	drop(plaintext_shard);
+
+	write_with_msg(
+		share_path.as_ref(),
+		&member_output.encrypted_shard,
+		"Encrypted envelope key shard",
+	);
+	write_with_msg(
+		&envelope_copy_path(share_path.as_ref()),
+		&output.envelope,
+		"Quorum key envelope",
+	);
 	Ok(())
 }
 
@@ -2487,18 +2927,6 @@ fn find_threshold<P: AsRef<Path>>(dir: P) -> u32 {
 	probably_threshold.remove(0)
 }
 
-/// Read a share set directory. Flat, it holds `<alias>.pub` members and one
-/// `quorum_threshold`, as ever. A share tree names each group by its path:
-/// `<group>.quorum_threshold` declares a group and its threshold,
-/// `<group>.<subgroup>.quorum_threshold` a group inside it, and
-/// `<group>.<alias>.pub` a member of it. Once any group is declared, every
-/// member's prefix must name a declared group, and a group inside an
-/// undeclared parent panics.
-fn get_share_set<P: AsRef<Path>>(dir: P) -> ShareSetV2 {
-	let (threshold, members, groups) = read_share_tree(dir);
-	ShareSetV2 { threshold, members, groups }
-}
-
 fn read_share_tree<P: AsRef<Path>>(
 	dir: P,
 ) -> (u32, Vec<QuorumMember>, Vec<ShareGroup>) {
@@ -2674,8 +3102,13 @@ fn get_patch_set<P: AsRef<Path>>(dir: P) -> PatchSet {
 	PatchSet { members, threshold: find_threshold(dir) }
 }
 
-/// Read a genesis set from a share set directory laid out as
-/// [`get_share_set`] reads it.
+/// Read a share set directory, with each member's full key. Flat, it holds
+/// `<alias>.pub` members and one `quorum_threshold`, as ever. A holder tree
+/// names each group by its path: `<group>.quorum_threshold` declares a group
+/// and its threshold, `<group>.<subgroup>.quorum_threshold` a group inside it,
+/// and `<group>.<alias>.pub` a member of it. Once any group is declared, every
+/// member's prefix must name a declared group, and a group inside an undeclared
+/// parent panics.
 fn get_genesis_set<P: AsRef<Path>>(dir: P) -> GenesisSet {
 	let (threshold, members, groups) = read_share_tree(dir);
 	GenesisSet { members, threshold, groups }
@@ -2710,7 +3143,9 @@ fn find_approvals<P: AsRef<Path>>(
 				});
 
 			assert!(
-				manifest.manifest_set().members.contains(&approval.member),
+				manifest
+					.manifest_set()
+					.is_ok_and(|set| set.locate(&approval.member).is_some()),
 				"Found approval from member ({:?}) not included in the Manifest Set",
 				approval.member.alias
 			);
@@ -2725,7 +3160,12 @@ fn find_approvals<P: AsRef<Path>>(
 			Some(approval)
 		})
 		.collect();
-	assert!(approvals.len() >= manifest.manifest_set().threshold as usize);
+	assert!(
+		approvals.len()
+			>= manifest
+				.manifest_set()
+				.map_or(usize::MAX, |set| set.threshold as usize)
+	);
 
 	approvals
 }
@@ -3037,7 +3477,7 @@ mod tests {
 	use qos_test_primitives::PathWrapper;
 
 	use super::{
-		Prompter, approve_manifest_human_verifications,
+		ExpectedShareSet, Prompter, approve_manifest_human_verifications,
 		approve_manifest_programmatic_verifications,
 		proxy_re_encrypt_share_human_verifications,
 		proxy_re_encrypt_share_programmatic_verifications,
@@ -3046,7 +3486,8 @@ mod tests {
 	struct Setup {
 		manifest: VersionedManifest,
 		manifest_set: ManifestSet,
-		share_set: ShareSetV2,
+		share_set: ShareSet,
+		pairs: Vec<HybridPair>,
 		nitro_config: NitroConfig,
 		pivot_hash: Vec<u8>,
 		quorum_key: HybridPublic,
@@ -3127,7 +3568,8 @@ mod tests {
 		Setup {
 			manifest,
 			manifest_set,
-			share_set: share_set.into(),
+			share_set,
+			pairs,
 			nitro_config,
 			pivot_hash,
 			quorum_key,
@@ -3170,8 +3612,8 @@ mod tests {
 				args: manifest.pivot.args,
 				env: PivotEnv::new(),
 			},
-			manifest_set: manifest.manifest_set,
-			share_set: manifest.share_set.into(),
+			manifest_set: (&manifest.manifest_set).try_into().unwrap(),
+			share_set: manifest.share_set.try_into().unwrap(),
 			enclave: manifest.enclave,
 			dns,
 			app_key_minter: None,
@@ -3231,8 +3673,8 @@ mod tests {
 					args: manifest.pivot.args,
 					env: PivotEnv::new(),
 				},
-				manifest_set: manifest.manifest_set,
-				share_set: manifest.share_set.into(),
+				manifest_set: (&manifest.manifest_set).try_into().unwrap(),
+				share_set: manifest.share_set.try_into().unwrap(),
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,
@@ -3316,7 +3758,7 @@ mod tests {
 			assert!(approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3343,7 +3785,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3370,7 +3812,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3396,7 +3838,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3422,7 +3864,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3448,7 +3890,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3474,7 +3916,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3500,7 +3942,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3526,7 +3968,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3552,7 +3994,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3578,7 +4020,7 @@ mod tests {
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
 				&manifest_set,
-				&share_set,
+				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
 				&pivot_hash,
@@ -3818,11 +4260,43 @@ mod tests {
 
 		#[test]
 		fn accepts_valid() {
-			let Setup { manifest_set, share_set, manifest_envelope, .. } =
+			let Setup { manifest, manifest_set, share_set, pairs, .. } =
 				setup();
+			let VersionedManifest::V2(manifest) =
+				v2_manifest_from(&manifest, None)
+			else {
+				panic!("v2_manifest_from makes a v2 manifest");
+			};
+			let hash = VersionedManifest::V2(manifest.clone()).manifest_hash();
+			let manifest_envelope =
+				VersionedManifestEnvelope::V2(ManifestEnvelopeV2 {
+					manifest,
+					manifest_set_approvals: std::iter::zip(
+						&pairs[..2],
+						&manifest_set.members,
+					)
+					.map(|(pair, member)| Approval {
+						signature: pair.sign(&hash).unwrap(),
+						member: member.clone(),
+					})
+					.collect(),
+					share_set_approvals: vec![],
+				});
 
 			let member = share_set.members[0].clone();
 			assert!(proxy_re_encrypt_share_programmatic_verifications(
+				&manifest_envelope,
+				&manifest_set,
+				&member
+			));
+		}
+
+		#[test]
+		fn rejects_a_v1_manifest_which_has_no_holder_tree() {
+			let Setup { manifest_set, share_set, manifest_envelope, .. } =
+				setup();
+			let member = share_set.members[0].clone();
+			assert!(!proxy_re_encrypt_share_programmatic_verifications(
 				&manifest_envelope,
 				&manifest_set,
 				&member
@@ -4246,8 +4720,8 @@ mod tests {
 					args: manifest.pivot.args,
 					env: PivotEnv::new(),
 				},
-				manifest_set: manifest.manifest_set,
-				share_set: manifest.share_set.into(),
+				manifest_set: (&manifest.manifest_set).try_into().unwrap(),
+				share_set: manifest.share_set.try_into().unwrap(),
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,
@@ -4290,8 +4764,8 @@ mod tests {
 					args: manifest.pivot.args,
 					env: PivotEnv::new(),
 				},
-				manifest_set: manifest.manifest_set,
-				share_set: manifest.share_set.into(),
+				manifest_set: (&manifest.manifest_set).try_into().unwrap(),
+				share_set: manifest.share_set.try_into().unwrap(),
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,
@@ -4347,12 +4821,12 @@ mod tests {
 		use std::path::{Path, PathBuf};
 
 		use qos_core::protocol::services::{
-			boot::{QuorumMember, ShareGroup, ShareSetV2},
+			boot::{QuorumMember, ShareGroup},
 			genesis::GenesisSet,
 		};
 		use qos_hybrid::{HybridPair, HybridPublic};
 
-		use super::super::{get_genesis_set, get_share_set};
+		use super::super::get_genesis_set;
 
 		struct Dir(PathBuf);
 
@@ -4404,8 +4878,8 @@ mod tests {
 			// Anything between the alias and `.pub` is ignored, as it always was.
 			let bob = dir.member("bob.share", "bob");
 			assert_eq!(
-				get_share_set(dir.path()),
-				ShareSetV2 {
+				get_genesis_set(dir.path()),
+				GenesisSet {
 					threshold: 2,
 					members: vec![alice, bob],
 					groups: vec![]
@@ -4426,7 +4900,7 @@ mod tests {
 			let e0 = dir.member("external.e0", "e0");
 			let c0 = dir.member("external.team1.c0", "c0");
 
-			let expected = ShareSetV2 {
+			let expected = GenesisSet {
 				threshold: 2,
 				members: vec![lead],
 				groups: vec![
@@ -4449,7 +4923,7 @@ mod tests {
 					},
 				],
 			};
-			assert_eq!(get_share_set(dir.path()), expected);
+			assert_eq!(get_genesis_set(dir.path()), expected);
 			assert_eq!(
 				get_genesis_set(dir.path()),
 				GenesisSet {
@@ -4468,7 +4942,7 @@ mod tests {
 			dir.threshold("external.quorum_threshold", 1);
 			dir.member("external.e0", "e0");
 			dir.member("umbra.u0", "u0");
-			get_share_set(dir.path());
+			get_genesis_set(dir.path());
 		}
 
 		#[test]
@@ -4478,7 +4952,171 @@ mod tests {
 			dir.threshold("quorum_threshold", 1);
 			dir.threshold("external.team1.quorum_threshold", 1);
 			dir.member("external.team1.c0", "c0");
-			get_share_set(dir.path());
+			get_genesis_set(dir.path());
+		}
+
+		#[test]
+		fn after_reshare_takes_only_the_expected_key_and_tree() {
+			use qos_core::protocol::services::{
+				envelope::{encode_shard, seal_quorum_key},
+				genesis::GenesisMemberOutput,
+				reshare::ReshareOutput,
+			};
+
+			use qos_core::protocol::services::boot::{
+				ShareHolderNode, ShareNode,
+			};
+			use qos_crypto::sha_512;
+
+			use super::super::{
+				AfterGenesisArgs, AfterReshareArgs, Error, PairOrYubi,
+				RESHARE_OUTPUT_FILE, after_reshare,
+			};
+
+			let dir = Dir::new("after_reshare_checks");
+			let set_dir = dir.path().join("set");
+			let other_set_dir = dir.path().join("other");
+			let namespace_dir = dir.path().join("namespace");
+			for path in [&set_dir, &other_set_dir, &namespace_dir] {
+				std::fs::create_dir_all(path).unwrap();
+			}
+			let holder = HybridPair::generate().unwrap();
+			for path in [&set_dir, &other_set_dir] {
+				std::fs::write(path.join("quorum_threshold"), "1").unwrap();
+				holder.public_key().to_hex_file(path.join("u0.pub")).unwrap();
+			}
+			HybridPair::generate()
+				.unwrap()
+				.public_key()
+				.to_hex_file(other_set_dir.join("e0.pub"))
+				.unwrap();
+
+			let set = get_genesis_set(&set_dir);
+			let holders = set.holder_set().unwrap();
+			let quorum = HybridPair::generate().unwrap();
+			let quorum_key = quorum.public_key().to_bytes();
+			let (envelope, shards) = seal_quorum_key(
+				&quorum.to_master_seed(),
+				&quorum_key,
+				&holders.tree().unwrap(),
+			)
+			.unwrap();
+			let member = set.members[0].clone();
+			let path = holders.locate(&member).unwrap().unwrap();
+			let encoded = encode_shard(&envelope.deal_id, &shards[&path]);
+			let output = ReshareOutput {
+				set: set.clone(),
+				quorum_key,
+				member_outputs: vec![GenesisMemberOutput {
+					share_set_member: member,
+					encrypted_shard: holder
+						.public_key()
+						.encrypt(&encoded)
+						.unwrap(),
+					shard_hash: sha_512(&encoded),
+				}],
+				envelope: envelope.encode(),
+			};
+			std::fs::write(
+				namespace_dir.join(RESHARE_OUTPUT_FILE),
+				borsh::to_vec(&output).unwrap(),
+			)
+			.unwrap();
+			let quorum_key_path = dir.path().join("quorum_key.pub");
+			quorum.public_key().to_hex_file(&quorum_key_path).unwrap();
+			let other_key_path = dir.path().join("other_key.pub");
+			HybridPair::generate()
+				.unwrap()
+				.public_key()
+				.to_hex_file(&other_key_path)
+				.unwrap();
+
+			let run = |quorum_key_path: &Path, share_set_dir: &Path| {
+				after_reshare(AfterReshareArgs {
+					holder: AfterGenesisArgs {
+						pair: PairOrYubi::Pair(holder.clone()),
+						share_path: dir.path().join("u0.share"),
+						alias: "u0".to_string(),
+						namespace_dir: namespace_dir.clone(),
+						qos_release_dir_path: dir.path().to_path_buf(),
+						pcr3_preimage_path: dir.path().join("pcr3"),
+						unsafe_skip_attestation: true,
+						validation_time_override: None,
+					},
+					quorum_key_path: quorum_key_path.to_path_buf(),
+					share_set_dir: share_set_dir.to_path_buf(),
+				})
+			};
+			assert!(matches!(
+				run(&other_key_path, &set_dir),
+				Err(Error::ReshareOutputNotForQuorumKey)
+			));
+			assert!(matches!(
+				run(&quorum_key_path, &other_set_dir),
+				Err(Error::ReshareOutputNotForShareSet)
+			));
+			assert!(!dir.path().join("u0.share").exists());
+			run(&quorum_key_path, &set_dir).unwrap();
+			assert!(dir.path().join("u0.share.envelope").exists());
+		}
+
+		#[test]
+		fn an_approve_reshare_signature_verifies_over_the_enclaves_digest() {
+			use qos_core::protocol::services::{
+				boot::{
+					Approval, ManifestBuilder, ManifestSet, Namespace,
+					NitroConfig, ShareNode, ShareSetV2,
+				},
+				reshare::reshare_digest,
+			};
+
+			use super::super::{
+				ApproveReshareArgs, PairOrYubi, approve_reshare,
+			};
+
+			let dir = Dir::new("approve_reshare_digest");
+			dir.threshold("quorum_threshold", 1);
+			dir.member("u0", "u0");
+			dir.member("e0", "e0");
+			let manifest = ManifestBuilder::v2()
+				.namespace(Namespace {
+					nonce: 1,
+					name: "reshare".to_string(),
+					quorum_key: vec![],
+				})
+				.pivot_hash([0; 32])
+				.manifest_set(ManifestSet { threshold: 1, members: vec![] })
+				.share_holders(ShareSetV2::default())
+				.no_quorum_key()
+				.enclave(NitroConfig::default())
+				.build()
+				.unwrap();
+			let manifest_path = dir.path().join("manifest");
+			std::fs::write(
+				&manifest_path,
+				qos_json::to_vec(&manifest).unwrap(),
+			)
+			.unwrap();
+			let approval_path = dir.path().join("reshare.approval");
+			let signer = HybridPair::generate().unwrap();
+
+			approve_reshare(ApproveReshareArgs {
+				pair: PairOrYubi::Pair(signer.clone()),
+				alias: "u0".to_string(),
+				manifest_path: manifest_path.clone(),
+				share_set_dir: dir.path().to_path_buf(),
+				approval_path: approval_path.clone(),
+			})
+			.unwrap();
+
+			let approval: Approval =
+				serde_json::from_slice(&std::fs::read(&approval_path).unwrap())
+					.unwrap();
+			let new_holders = get_genesis_set(dir.path()).holder_set().unwrap();
+			let digest =
+				reshare_digest(&manifest.manifest_hash(), &new_holders)
+					.unwrap();
+			signer.public_key().verify(&digest, &approval.signature).unwrap();
 		}
 	}
 }

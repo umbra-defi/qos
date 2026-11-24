@@ -11,6 +11,7 @@ use crate::protocol::{
 	services::{
 		boot::{Approval, VersionedManifestEnvelope},
 		genesis::{GenesisOutput, GenesisSet},
+		reshare::ReshareOutput,
 	},
 };
 
@@ -328,6 +329,10 @@ pub enum ProtocolMsg {
 		/// and the receiving enclave's setup Ephemeral Key.
 		#[serde(with = "qos_hex::serde")]
 		order_signature: Vec<u8>,
+		/// The minter's full hybrid public key, which must digest to the
+		/// manifest's `appKeyMinter`.
+		#[serde(with = "qos_hex::serde")]
+		minter_public_key: Vec<u8>,
 	},
 	/// Successful response to [`Self::MintAppKeyRequest`].
 	MintAppKeyResponse,
@@ -364,6 +369,31 @@ pub enum ProtocolMsg {
 	},
 	/// Successful response to [`Self::InjectAppKeyRequest`].
 	InjectAppKeyResponse,
+	/// Hand a booted enclave the quorum key envelope its manifest names, before any shard. Anyone
+	/// may send it: the enclave accepts only the envelope whose digest the manifest carries.
+	ProvideQuorumKeyEnvelopeRequest {
+		/// The encoded [`crate::protocol::services::envelope::QuorumKeyEnvelope`].
+		#[serde(with = "qos_hex::serde")]
+		envelope: Vec<u8>,
+	},
+	/// Successful response to [`Self::ProvideQuorumKeyEnvelopeRequest`].
+	ProvideQuorumKeyEnvelopeResponse,
+	/// Order a provisioned enclave to seal its quorum key under a fresh envelope key dealt over a
+	/// new holder tree. See [`crate::protocol::services::reshare`].
+	ReshareQuorumKeyRequest {
+		/// The new holder tree, with full keys.
+		set: GenesisSet,
+		/// Approvals of the reshare digest, satisfying the current holder tree and the manifest
+		/// set.
+		approvals: Vec<Approval>,
+	},
+	/// Successful response to [`Self::ReshareQuorumKeyRequest`].
+	ReshareQuorumKeyResponse {
+		/// COSE SIGN1 attestation whose user data is the output's hash.
+		nsm_response: NsmResponse,
+		/// The new envelope and each new holder's encrypted shard.
+		output: Box<ReshareOutput>,
+	},
 }
 
 impl ProtocolMsg {
@@ -556,6 +586,18 @@ impl std::fmt::Display for ProtocolMsg {
 				write!(f, "InjectAppKeyRequest")
 			}
 			Self::InjectAppKeyResponse => write!(f, "InjectAppKeyResponse"),
+			Self::ProvideQuorumKeyEnvelopeRequest { .. } => {
+				write!(f, "ProvideQuorumKeyEnvelopeRequest")
+			}
+			Self::ProvideQuorumKeyEnvelopeResponse => {
+				write!(f, "ProvideQuorumKeyEnvelopeResponse")
+			}
+			Self::ReshareQuorumKeyRequest { .. } => {
+				write!(f, "ReshareQuorumKeyRequest")
+			}
+			Self::ReshareQuorumKeyResponse { .. } => {
+				write!(f, "ReshareQuorumKeyResponse")
+			}
 			Self::ManifestEnvelopeRequest { .. } => {
 				write!(f, "ManifestEnvelopeRequest")
 			}
@@ -581,8 +623,9 @@ mod test {
 	use super::*;
 	use crate::protocol::services::boot::{
 		Manifest, ManifestEnvelope, ManifestEnvelopeV2, ManifestSet,
-		ManifestV2, ManifestVersion, Namespace, NitroConfig, PatchSet,
-		PivotConfig, PivotConfigV2, PivotEnv, RestartPolicy, ShareSet,
+		ManifestSetV2, ManifestV2, ManifestVersion, Namespace, NitroConfig,
+		PatchSet, PivotConfig, PivotConfigV2, PivotEnv, RestartPolicy,
+		ShareSet,
 	};
 
 	fn sample_genesis_output() -> GenesisOutput {
@@ -591,6 +634,7 @@ mod test {
 			dr_key: None,
 			quorum_key: vec![3, 2, 1],
 			member_outputs: vec![],
+			envelope: vec![],
 			recovery_permutations: vec![],
 			dr_key_wrapped_quorum_key: None,
 			quorum_key_hash: [22; 64],
@@ -695,8 +739,10 @@ mod test {
 				args: vec![],
 				env: PivotEnv::new(),
 			},
-			manifest_set: ManifestSet { threshold: 1, members: vec![] },
-			share_set: ShareSet { threshold: 1, members: vec![] }.into(),
+			manifest_set: ManifestSetV2 { threshold: 1, members: vec![] },
+			share_set: ShareSet { threshold: 1, members: vec![] }
+				.try_into()
+				.unwrap(),
 			enclave: NitroConfig {
 				pcr0: vec![0; 48],
 				pcr1: vec![1; 48],
@@ -746,8 +792,10 @@ mod test {
 					args: vec![],
 					env: PivotEnv::new(),
 				},
-				manifest_set: ManifestSet { threshold: 1, members: vec![] },
-				share_set: ShareSet { threshold: 1, members: vec![] }.into(),
+				manifest_set: ManifestSetV2 { threshold: 1, members: vec![] },
+				share_set: ShareSet { threshold: 1, members: vec![] }
+					.try_into()
+					.unwrap(),
 				enclave: NitroConfig {
 					pcr0: vec![0; 48],
 					pcr1: vec![1; 48],

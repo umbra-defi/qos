@@ -7,10 +7,13 @@ use qos_nsm::{nitro::attestation_doc_from_der, types::NsmResponse};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
-	ProtocolError, ProtocolState, QosHash,
+	ProtocolError, ProtocolState,
 	services::{
 		app_key::{Settled, seal_app_key, settle_quorum_key},
-		boot::{VersionedManifestEnvelope, put_manifest_and_pivot},
+		boot::{
+			VersionedManifestEnvelope, manifest::canonical_json_hash,
+			put_manifest_and_pivot,
+		},
 	},
 };
 
@@ -242,25 +245,21 @@ fn validate_manifest(
 	// Node - thus it's important to retire all Original Nodes ASAP that use
 	// compromised Manifest Sets.
 	{
-		let mut old_members = old_manifest.manifest_set().members.clone();
-		let mut new_members = new_manifest.manifest_set().members.clone();
-		old_members.sort();
-		new_members.sort();
-		if old_manifest.manifest_set().threshold
-			!= new_manifest.manifest_set().threshold
-			|| old_members != new_members
+		let old_set = old_manifest.manifest_set()?.normalised();
+		let new_set = new_manifest.manifest_set()?.normalised();
+		if old_set.threshold != new_set.threshold
+			|| old_set
+				.members
+				.iter()
+				.map(|m| (&m.receiving_key_digest, &m.signing_key_digest))
+				.ne(new_set
+					.members
+					.iter()
+					.map(|m| (&m.receiving_key_digest, &m.signing_key_digest)))
 		{
-			let old_set = crate::protocol::services::boot::ManifestSet {
-				threshold: old_manifest.manifest_set().threshold,
-				members: old_members,
-			};
-			let new_set = crate::protocol::services::boot::ManifestSet {
-				threshold: new_manifest.manifest_set().threshold,
-				members: new_members,
-			};
 			return Err(ProtocolError::DifferentManifestSet {
-				expected: qos_hex::encode(&old_set.qos_hash()),
-				actual: qos_hex::encode(&new_set.qos_hash()),
+				expected: qos_hex::encode(&canonical_json_hash(&old_set)),
+				actual: qos_hex::encode(&canonical_json_hash(&new_set)),
 			});
 		}
 	}

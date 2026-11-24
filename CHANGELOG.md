@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/umbra-defi/qos/compare/v0.18.0...v0.19.0) - 2026-11-24
+
+### Breaking
+- The quorum key is no longer split directly. Genesis seals its master seed in a quorum key
+  envelope (AES-256-GCM under a fresh 64-byte envelope key) and deals the envelope key down the
+  share set's holder tree with `qos_nested_shamir`; holders get an envelope key shard each and
+  keep a copy of the envelope. `GenesisOutput` gains `envelope`, and `GenesisMemberOutput`'s
+  fields are `encrypted_shard` and `shard_hash`.
+- A v2 share set names holders by the SHA3-384 digests of their receiving (ML-KEM-1024 + X25519)
+  and signing (ML-DSA-87 + Ed25519) key halves, nested in `groups`, and carries `envelopeDigest`.
+  The 0.18 full-key share tree is gone, so quorum-key namespaces re-genesis. A manifest without a
+  quorum key keeps its empty share set's JSON and hash.
+- Provisioning needs the envelope first (`ProvideQuorumKeyEnvelopeRequest`); shards then rebuild
+  the envelope key against its root commitment. v0 and v1 manifests have no holder tree and do
+  not provision. `VersionedManifest::share_set` returns `Option<&ShareSetV2>`, and
+  `ManifestBuilder` takes `share_holders` for v2 and `share_set` only for v1.
+- `qos_crypto::share_tree` is removed.
+- Every key a v2 manifest names is a digest: the manifest set's members, like the share set's
+  holders, are `MemberDigest`s (alias and the SHA3-384 digests of the receiving and signing key
+  halves), and `appKeyMinter` is a `KeyDigests`. Whoever acts presents the full key, which must
+  digest to the name: approvals already carry it, and `MintAppKeyRequest` gains
+  `minter_public_key`. Every v2 manifest's hash changes, including those without a quorum key.
+  `VersionedManifest::manifest_set` returns a digested `ManifestSetV2` for every version, and the
+  mint order file holds the signature, then the minter's public key.
+
+### Added
+- `qos_nested_shamir`: Umbra's guardian nested-Shamir crate, with the top threshold left to the
+  operator (1 to its children, as at every point).
+- Reshare: a provisioned enclave, given approvals that satisfy both the current holder tree and
+  the Manifest Set (`ReshareQuorumKeyRequest`), seals the same quorum key under a new envelope key
+  dealt over a new tree. A removed holder keeps its old shard and the old envelope, so it loses the
+  key only once too few old shards survive to satisfy the old tree.
+- `qos_client`: `provide-quorum-key-envelope`, `approve-reshare`, `reshare-quorum-key` and
+  `after-reshare`; `after-genesis` keeps the holder's copy of the envelope as `<shard>.envelope`,
+  and `boot-genesis` writes `quorum_key.envelope` beside `quorum_key.pub`. `after-reshare` takes
+  the expected `--quorum-key-path` and the approved `--share-set-dir`, and refuses an output that
+  seals another quorum key or deals over another tree.
+
+### Changed
+- A refused shard no longer spends the boot: the provision route leaves the enclave waiting for
+  shards on any error, so a holder's retry, a shard before the envelope, a stray post or a failed
+  rebuild can be followed by the right posts. A shard that does not match its holder's point hint
+  is refused alone, and each holder's approval is recorded once.
+- A reshare counts only the approvals that verify, so one bad approval cannot block the others.
+
+### Fixed
+- `boot-genesis` counted only the share set's root members against the genesis output, so any tree
+  with groups failed its check.
+
 ## [0.18.0](https://github.com/umbra-defi/qos/compare/v0.17.0...v0.18.0) - 2026-11-24
 
 ### Breaking
