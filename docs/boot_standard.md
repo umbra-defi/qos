@@ -97,14 +97,15 @@ Node is reachable through `qos_host`.
     Pivot App hash, restart policy, optional pivot configuration, Manifest Set,
     Share Set, and Nitro PCR values. The Manifest Envelope must have
     at least `manifest.manifest_set.threshold` valid approvals from distinct
-    members of the Manifest Set. The Share Set has its own threshold,
-    `manifest.share_set.threshold`, which controls quorum key reconstruction
-    during provisioning rather than manifest approval. A v2 Share Set may also
-    hold `groups`, making it a share tree: the root threshold counts satisfied
-    children, its members first, then its groups, and each group is satisfied
-    by its own threshold over its own members and groups (at most 4 levels, 255
-    children per node). A Share Set without groups is the flat
-    `threshold`-of-`members` set and keeps its manifest hash.
+    members of the Manifest Set. The v2 Share Set is a holder tree: the root's
+    `threshold` counts satisfied children, its members first, then its
+    `groups`, each satisfied by its own threshold (1 to its children at every
+    level, at most 8 levels and 64 holders). Holders are named by the SHA3-384
+    digests of their receiving and signing key halves, and `envelopeDigest`
+    names the quorum key envelope: the quorum key's master seed sealed under an
+    envelope key that genesis dealt down the tree. Holders recover the envelope
+    key, never the quorum key itself, so a reshare can deal a new envelope key
+    over a new tree and keep the quorum key.
 
 2) The Node gets a `BootStandardRequest` from the Client.
 
@@ -145,8 +146,11 @@ Node is reachable through `qos_host`.
     1) Check that the Share Holder belongs to the Share Set in the manifest.
     1) Perform any required human checks, such as confirming the namespace name, nonce, IAM role, and Manifest Set approvers.
 
-5) Each Share Holder decrypts their locally held share and constructs a
-   `ProvisionRequest`.
+5) Anyone holding the envelope, such as the coordinator or a holder from its
+   own copy, sends `ProvideQuorumKeyEnvelopeRequest`. The Node accepts only the
+   envelope whose digest is `manifest.share_set.envelope_digest`, and refuses
+   shards until it has it. Each Share Holder then decrypts their locally held
+   shard and constructs a `ProvisionRequest`.
 
     ```rust
     struct ProvisionRequest {
@@ -155,23 +159,23 @@ Node is reachable through `qos_host`.
     }
     ```
 
-    The `share` field is the Share Holder's quorum key share re-encrypted to
-    the Node's setup Ephemeral Key. The `approval` is the Share Holder's signature over
+    The `share` field is the Share Holder's envelope key shard (its deal id and
+    64 bytes) re-encrypted to the Node's setup Ephemeral Key. The `approval` is the Share Holder's signature over
     the manifest hash, plus the Share Holder member information. This approval
     proves that the intended Share Holder intentionally provisioned a share for this
     manifest.
 
 6) The Node processes each `ProvisionRequest` by performing the following steps in
-   [`provision`](../src/qos_core/src/protocol/services/provision.rs#L83-L163):
+   [`provision`](../src/qos_core/src/protocol/services/provision.rs#L67-L148):
     1) Fetch the local Manifest Envelope written during `BootStandardRequest`.
     1) Verify that the approval signature is valid over the manifest hash.
-    1) Check the Share Set is a valid share tree: every threshold within 1 and its node's children, unique group aliases, and no two members sharing an alias or a key component.
-    1) Verify that the approver belongs to the manifest's Share Set, at any depth, and has not already posted a share.
-    1) Decrypt the posted share with the Node's setup Ephemeral Key, and reject it unless it is a master seed plus one byte long and its identifier byte is the approver's position within its group.
+    1) Check the Share Set is a valid holder tree and that the envelope has been provided.
+    1) Locate the holder whose key digests match the approver's key, and check it has not already posted.
+    1) Decrypt the posted shard with the Node's setup Ephemeral Key, and reject it unless its deal id is the envelope's.
     1) Record the Share Set approval in the local Manifest Envelope for auditability.
-    1) Add the decrypted share to the provisioning state at the approver's leaf. Each recorded Share Set approval corresponds to one posted encrypted share; the Node does not separately accept a batch of Share Set approvals before shares are posted. Note the approvals are primarily for audit trail purposes.
-    1) If the posted shares do not yet satisfy the Share Set, return `ProvisionResponse { reconstructed: false }`.
-    1) Once they do, reconstruct the Quorum Key bottom up, each group from its first threshold satisfied children, with Shamir reconstruction. A failed reconstruction drops the posted shares so members can post again.
+    1) Add the decrypted shard to the provisioning state at the holder's path. Each recorded Share Set approval corresponds to one posted encrypted shard; the Node does not separately accept a batch of Share Set approvals before shards are posted. Note the approvals are primarily for audit trail purposes.
+    1) If the posted shards do not yet satisfy the holder tree, return `ProvisionResponse { reconstructed: false }`.
+    1) Once they do, rebuild the envelope key bottom up, passing over bad shards with the envelope's hints and accepting only a key that matches its root commitment, then open the envelope. A failed rebuild drops the posted shards so holders can post again.
     1) Check that the reconstructed Quorum Key public key matches `manifest.namespace.quorum_key`. This is the effective cryptographic check for provisioning: if the posted shares cannot reconstruct the intended key, provisioning fails.
     1) If the manifest names an `appKeyMinter`, keep the Quorum Key in memory, return `ProvisionResponse { reconstructed: true, awaiting_app_key: true }` and wait in `WaitingForAppKey` until the minter's order mints the App Key or an enclave of the manifest forwards it (see [Enclave Keys](enclave_keys.md#app-key)); the steps below run then.
     1) Rotate to the precommitted live Ephemeral Key so app-level uses do not reuse the setup key that protected share provisioning.
