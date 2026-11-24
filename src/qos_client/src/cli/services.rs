@@ -27,6 +27,7 @@ use qos_core::protocol::{
 		envelope::QuorumKeyEnvelope,
 		genesis::{GenesisOutput, GenesisSet},
 		key::EncryptedQuorumKey,
+		reshare::{ReshareOutput, reshare_digest},
 	},
 };
 use qos_crypto::{sha_256, sha_384, sha_512};
@@ -49,6 +50,8 @@ const PUB_EXT: &str = "pub";
 const GENESIS_ATTESTATION_DOC_FILE: &str = "genesis_attestation_doc";
 const GENESIS_OUTPUT_FILE: &str = "genesis_output";
 const QUORUM_KEY_ENVELOPE_FILE: &str = "quorum_key.envelope";
+const RESHARE_OUTPUT_FILE: &str = "reshare_output";
+const RESHARE_ATTESTATION_DOC_FILE: &str = "reshare_attestation_doc";
 const MANIFEST_ENVELOPE: &str = "manifest_envelope";
 const APPROVAL_EXT: &str = "approval";
 const QUORUM_THRESHOLD_FILE: &str = "quorum_threshold";
@@ -2154,6 +2157,260 @@ pub(crate) fn post_share<P: AsRef<Path>>(
 		println!("The quorum key has *not* been reconstructed.");
 	}
 
+	Ok(())
+}
+
+/// Hand a booted enclave the quorum key envelope its manifest names, before
+/// any shard is posted.
+pub(crate) fn provide_quorum_key_envelope<P: AsRef<Path>>(
+	uri: &str,
+	envelope_path: P,
+) -> Result<(), Error> {
+	let envelope = fs::read(envelope_path.as_ref()).map_err(|e| {
+		Error::FailedToReadQuorumKeyEnvelope(format!(
+			"{}: {e}",
+			envelope_path.as_ref().display()
+		))
+	})?;
+	let req = ProtocolMsg::ProvideQuorumKeyEnvelopeRequest { envelope };
+	match request::post(uri, &req).unwrap() {
+		ProtocolMsg::ProvideQuorumKeyEnvelopeResponse => {
+			println!("The enclave holds the quorum key envelope.");
+			Ok(())
+		}
+		r => panic!("Unexpected response: {r:?}"),
+	}
+}
+
+pub(crate) struct ApproveReshareArgs<P: AsRef<Path>> {
+	pub pair: PairOrYubi,
+	pub alias: String,
+	pub manifest_path: P,
+	pub share_set_dir: P,
+	pub approval_path: P,
+}
+
+/// Sign a reshare of the manifest's quorum key to the share set directory's
+/// holder tree, after showing that tree for review.
+pub(crate) fn approve_reshare<P: AsRef<Path>>(
+	ApproveReshareArgs {
+		mut pair,
+		alias,
+		manifest_path,
+		share_set_dir,
+		approval_path,
+	}: ApproveReshareArgs<P>,
+) -> Result<(), Error> {
+	let manifest = read_manifest_compat(&manifest_path)?;
+	let new_set = get_genesis_set(&share_set_dir);
+	new_set.validate()?;
+	println!(
+		"Reshare of {} nonce {}",
+		manifest.namespace().name,
+		manifest.namespace().nonce
+	);
+	print_holder_tree(&new_set);
+	let digest =
+		reshare_digest(&manifest.manifest_hash(), &new_set.holder_set()?)?;
+	let approval = Approval {
+		signature: pair.sign(&digest)?,
+		member: QuorumMember { pub_key: pair.public_key_bytes()?, alias },
+	};
+	write_with_msg(
+		approval_path.as_ref(),
+		&serde_json::to_vec(&approval).expect("Failed to serialize approval"),
+		"Reshare Approval",
+	);
+	Ok(())
+}
+
+fn print_holder_tree(set: &GenesisSet) {
+	fn print_group(group: &ShareGroup, depth: usize) {
+		let children = group.members.len() + group.groups.len();
+		println!(
+			"{}{}: {} of {children}",
+			"  ".repeat(depth),
+			group.alias,
+			group.threshold
+		);
+		for member in &group.members {
+			println!("{}{}", "  ".repeat(depth + 1), member.alias);
+		}
+		for subgroup in &group.groups {
+			print_group(subgroup, depth + 1);
+		}
+	}
+	println!(
+		"new holder tree: {} of {}",
+		set.threshold,
+		set.members.len() + set.groups.len()
+	);
+	for member in &set.members {
+		println!("  {}", member.alias);
+	}
+	for group in &set.groups {
+		print_group(group, 1);
+	}
+}
+
+pub(crate) struct ReshareQuorumKeyArgs<'a, P: AsRef<Path>> {
+	pub uri: &'a str,
+	pub share_set_dir: P,
+	pub reshare_approvals_dir: P,
+	pub namespace_dir: P,
+	pub qos_release_dir_path: P,
+	pub pcr3_preimage_path: P,
+	pub unsafe_skip_attestation: bool,
+}
+
+/// Order a provisioned enclave to reshare its quorum key to the share set
+/// directory's holder tree, check the attested output, and write it to the
+/// namespace directory for the new holders' `after-reshare`.
+pub(crate) fn reshare_quorum_key<P: AsRef<Path>>(
+	ReshareQuorumKeyArgs {
+		uri,
+		share_set_dir,
+		reshare_approvals_dir,
+		namespace_dir,
+		qos_release_dir_path,
+		pcr3_preimage_path,
+		unsafe_skip_attestation,
+	}: ReshareQuorumKeyArgs<P>,
+) -> Result<(), Error> {
+	let set = get_genesis_set(&share_set_dir);
+	let approvals = find_file_paths(&reshare_approvals_dir)
+		.iter()
+		.filter(|path| {
+			split_file_name(path).last().is_some_and(|ext| ext == APPROVAL_EXT)
+		})
+		.map(read_attestation_approval)
+		.collect::<Result<Vec<_>, _>>()?;
+	let req =
+		ProtocolMsg::ReshareQuorumKeyRequest { set: set.clone(), approvals };
+	let (cose_sign1, output) = match request::post_json(uri, &req).unwrap() {
+		ProtocolMsg::ReshareQuorumKeyResponse {
+			nsm_response: NsmResponse::Attestation { document },
+			output,
+		} => (document, output),
+		r => panic!("Unexpected response: {r:?}"),
+	};
+	if output.set != set {
+		return Err(Error::GenesisOutputDoesNotMatchRequest);
+	}
+	let envelope = QuorumKeyEnvelope::decode(&output.envelope)
+		.map_err(|e| Error::FailedToReadQuorumKeyEnvelope(format!("{e}")))?;
+	if set.holder_set()?.tree()?.digest().0 != envelope.tree_digest {
+		return Err(Error::QuorumKeyEnvelopeNotForShareSet);
+	}
+	if unsafe_skip_attestation {
+		println!("**WARNING:** Skipping attestation document verification.");
+	} else {
+		let qos_pcrs = extract_qos_pcrs(qos_release_dir_path);
+		verify_attestation_doc_against_user_input(
+			&extract_attestation_doc(&cose_sign1, false, None),
+			&output.qos_hash(),
+			&qos_pcrs.pcr0,
+			&qos_pcrs.pcr1,
+			&qos_pcrs.pcr2,
+			&extract_pcr3(pcr3_preimage_path),
+		)?;
+	}
+
+	let dir = namespace_dir.as_ref();
+	write_with_msg(
+		&dir.join(RESHARE_OUTPUT_FILE),
+		&borsh::to_vec(&*output).expect("reshare output serializes"),
+		"Reshare Output",
+	);
+	write_with_msg(
+		&dir.join(RESHARE_ATTESTATION_DOC_FILE),
+		&cose_sign1,
+		"Reshare Attestation Doc",
+	);
+	write_with_msg(
+		&dir.join(QUORUM_KEY_ENVELOPE_FILE),
+		&output.envelope,
+		QUORUM_KEY_ENVELOPE_FILE,
+	);
+	Ok(())
+}
+
+/// A new holder's `after-reshare`: check the attested reshare output, decrypt
+/// the holder's shard, and keep it with a copy of the new envelope.
+pub(crate) fn after_reshare<P: AsRef<Path>>(
+	AfterGenesisArgs {
+		mut pair,
+		share_path,
+		alias,
+		namespace_dir,
+		qos_release_dir_path,
+		pcr3_preimage_path,
+		unsafe_skip_attestation,
+		validation_time_override,
+	}: AfterGenesisArgs<P>,
+) -> Result<(), Error> {
+	let dir = namespace_dir.as_ref();
+	let output = ReshareOutput::try_from_slice(
+		&fs::read(dir.join(RESHARE_OUTPUT_FILE)).map_err(|e| {
+			Error::FailedToReadQuorumKeyEnvelope(format!("reshare output: {e}"))
+		})?,
+	)?;
+	if !unsafe_skip_attestation {
+		let cose_sign1 = fs::read(dir.join(RESHARE_ATTESTATION_DOC_FILE))
+			.map_err(|e| {
+				Error::FailedToReadQuorumKeyEnvelope(format!(
+					"reshare attestation doc: {e}"
+				))
+			})?;
+		let qos_pcrs = extract_qos_pcrs(&qos_release_dir_path);
+		verify_attestation_doc_against_user_input(
+			&extract_attestation_doc(
+				&cose_sign1,
+				false,
+				validation_time_override,
+			),
+			&output.qos_hash(),
+			&qos_pcrs.pcr0,
+			&qos_pcrs.pcr1,
+			&qos_pcrs.pcr2,
+			&extract_pcr3(pcr3_preimage_path),
+		)?;
+	}
+
+	let public = pair.public_key_bytes()?;
+	let member_output = output
+		.member_outputs
+		.iter()
+		.find(|m| {
+			m.share_set_member.pub_key == public
+				&& m.share_set_member.alias == alias
+		})
+		.expect("Could not find a member output associated with the setup key");
+	let plaintext_shard = pair.decrypt(&member_output.encrypted_shard)?;
+	assert_eq!(
+		sha_512(&plaintext_shard),
+		member_output.shard_hash,
+		"Expected shard hash do not match the actual shard hash"
+	);
+	let envelope = QuorumKeyEnvelope::decode(&output.envelope)
+		.map_err(|e| Error::FailedToReadQuorumKeyEnvelope(format!("{e}")))?;
+	assert_eq!(
+		&plaintext_shard[..envelope.deal_id.0.len()],
+		&envelope.deal_id.0[..],
+		"The shard belongs to another deal than the reshare's envelope"
+	);
+	drop(plaintext_shard);
+
+	write_with_msg(
+		share_path.as_ref(),
+		&member_output.encrypted_shard,
+		"Encrypted envelope key shard",
+	);
+	write_with_msg(
+		&envelope_copy_path(share_path.as_ref()),
+		&output.envelope,
+		"Quorum key envelope",
+	);
 	Ok(())
 }
 
@@ -4638,6 +4895,65 @@ mod tests {
 			dir.threshold("external.team1.quorum_threshold", 1);
 			dir.member("external.team1.c0", "c0");
 			get_genesis_set(dir.path());
+		}
+
+		#[test]
+		fn an_approve_reshare_signature_verifies_over_the_enclaves_digest() {
+			use qos_core::protocol::services::{
+				boot::{
+					Approval, ManifestBuilder, ManifestSet, Namespace,
+					NitroConfig, ShareNode, ShareSetV2,
+				},
+				reshare::reshare_digest,
+			};
+
+			use super::super::{
+				ApproveReshareArgs, PairOrYubi, approve_reshare,
+			};
+
+			let dir = Dir::new("approve_reshare_digest");
+			dir.threshold("quorum_threshold", 1);
+			dir.member("u0", "u0");
+			dir.member("e0", "e0");
+			let manifest = ManifestBuilder::v2()
+				.namespace(Namespace {
+					nonce: 1,
+					name: "reshare".to_string(),
+					quorum_key: vec![],
+				})
+				.pivot_hash([0; 32])
+				.manifest_set(ManifestSet { threshold: 1, members: vec![] })
+				.share_holders(ShareSetV2::default())
+				.no_quorum_key()
+				.enclave(NitroConfig::default())
+				.build()
+				.unwrap();
+			let manifest_path = dir.path().join("manifest");
+			std::fs::write(
+				&manifest_path,
+				qos_json::to_vec(&manifest).unwrap(),
+			)
+			.unwrap();
+			let approval_path = dir.path().join("reshare.approval");
+			let signer = HybridPair::generate().unwrap();
+
+			approve_reshare(ApproveReshareArgs {
+				pair: PairOrYubi::Pair(signer.clone()),
+				alias: "u0".to_string(),
+				manifest_path: manifest_path.clone(),
+				share_set_dir: dir.path().to_path_buf(),
+				approval_path: approval_path.clone(),
+			})
+			.unwrap();
+
+			let approval: Approval =
+				serde_json::from_slice(&std::fs::read(&approval_path).unwrap())
+					.unwrap();
+			let new_holders = get_genesis_set(dir.path()).holder_set().unwrap();
+			let digest =
+				reshare_digest(&manifest.manifest_hash(), &new_holders)
+					.unwrap();
+			signer.public_key().verify(&digest, &approval.signature).unwrap();
 		}
 	}
 }
