@@ -6,7 +6,7 @@ use crate::protocol::{
 	Hash256,
 	services::boot::{
 		Approval, BridgeConfig, ManifestSet, Namespace, NitroConfig, PivotEnv,
-		RestartPolicy, ShareSet,
+		QuorumMember, RestartPolicy, ShareGroup, ShareNode, ShareSet,
 	},
 };
 
@@ -41,6 +41,46 @@ pub struct PivotConfigV2 {
 	pub env: PivotEnv,
 }
 
+/// The share set of a v2 manifest: the root of a share tree. It recovers the
+/// quorum key once `threshold` of its children are satisfied, its members
+/// first, then its groups. With no groups it serializes exactly as a flat
+/// [`ShareSet`], so flat manifests keep their hash.
+#[derive(PartialEq, Eq, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(any(feature = "mock", test), derive(Default))]
+pub struct ShareSetV2 {
+	/// Children that must be satisfied to recover the quorum key.
+	#[serde(with = "qos_json::string_or_numeric")]
+	pub threshold: u32,
+	/// Members holding a share of the quorum key.
+	pub members: Vec<QuorumMember>,
+	/// Groups, each recovering one share of the quorum key.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub groups: Vec<ShareGroup>,
+}
+
+impl ShareNode for ShareSetV2 {
+	fn threshold(&self) -> u32 {
+		self.threshold
+	}
+	fn members(&self) -> &[QuorumMember] {
+		&self.members
+	}
+	fn groups(&self) -> &[ShareGroup] {
+		&self.groups
+	}
+}
+
+impl From<ShareSet> for ShareSetV2 {
+	fn from(flat: ShareSet) -> Self {
+		Self {
+			threshold: flat.threshold,
+			members: flat.members,
+			groups: vec![],
+		}
+	}
+}
+
 /// Explicitly versioned JSON manifest (v2).
 #[derive(PartialEq, Eq, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -55,8 +95,8 @@ pub struct ManifestV2 {
 	pub pivot: PivotConfigV2,
 	/// Manifest Set members and threshold.
 	pub manifest_set: ManifestSet,
-	/// Share Set members and threshold.
-	pub share_set: ShareSet,
+	/// Share Set: a tree of threshold groups over the quorum key shares.
+	pub share_set: ShareSetV2,
 	/// Configuration and verifiable values for the enclave hardware.
 	pub enclave: NitroConfig,
 	/// DNS resolver configuration for the enclave.

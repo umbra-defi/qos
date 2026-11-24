@@ -1,6 +1,6 @@
 //! Versioned manifest helpers.
 
-use std::io::Error;
+use std::{borrow::Cow, io::Error};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -10,14 +10,14 @@ use std::net::IpAddr;
 
 use super::{
 	Approval, BridgeConfig, Manifest, ManifestEnvelope, ManifestEnvelopeV0,
-	ManifestSet, ManifestV0, Namespace, NitroConfig, RestartPolicy, ShareSet,
+	ManifestSet, ManifestV0, Namespace, NitroConfig, RestartPolicy,
 };
 
 mod builder;
 pub mod v2;
 
 pub use builder::{ManifestBuilder, ManifestBuilderError};
-pub use v2::{DnsConfig, ManifestEnvelopeV2, ManifestV2};
+pub use v2::{DnsConfig, ManifestEnvelopeV2, ManifestV2, ShareSetV2};
 
 /// Schema version used by versioned manifest tooling.
 #[derive(
@@ -156,13 +156,14 @@ impl VersionedManifest {
 		}
 	}
 
-	/// Return the share set authorized to approve share material.
+	/// Return the share set authorized to approve share material. A v0 or v1
+	/// manifest's flat share set comes back as a tree with no groups.
 	#[must_use]
-	pub fn share_set(&self) -> &ShareSet {
+	pub fn share_set(&self) -> Cow<'_, ShareSetV2> {
 		match self {
-			Self::V2(manifest) => &manifest.share_set,
-			Self::V1(manifest) => &manifest.share_set,
-			Self::V0(manifest) => &manifest.share_set,
+			Self::V2(manifest) => Cow::Borrowed(&manifest.share_set),
+			Self::V1(manifest) => Cow::Owned(manifest.share_set.clone().into()),
+			Self::V0(manifest) => Cow::Owned(manifest.share_set.clone().into()),
 		}
 	}
 
@@ -445,13 +446,17 @@ impl VersionedManifestEnvelope {
 		}
 	}
 
-	/// Return the embedded share set.
+	/// Return the embedded share set, a flat one as a tree with no groups.
 	#[must_use]
-	pub fn share_set(&self) -> &ShareSet {
+	pub fn share_set(&self) -> Cow<'_, ShareSetV2> {
 		match self {
-			Self::V2(envelope) => &envelope.manifest.share_set,
-			Self::V1(envelope) => &envelope.manifest.share_set,
-			Self::V0(envelope) => &envelope.manifest.share_set,
+			Self::V2(envelope) => Cow::Borrowed(&envelope.manifest.share_set),
+			Self::V1(envelope) => {
+				Cow::Owned(envelope.manifest.share_set.clone().into())
+			}
+			Self::V0(envelope) => {
+				Cow::Owned(envelope.manifest.share_set.clone().into())
+			}
 		}
 	}
 
@@ -589,7 +594,7 @@ mod tests {
 		QosHash,
 		services::boot::{
 			MemberPubKey, PatchSet, PivotConfig, PivotConfigV0, PivotEnv,
-			QuorumMember,
+			QuorumMember, ShareSet,
 		},
 	};
 
@@ -620,7 +625,7 @@ mod tests {
 				threshold: 1,
 				members: vec![member.clone()],
 			},
-			share_set: ShareSet { threshold: 1, members: vec![member] },
+			share_set: ShareSet { threshold: 1, members: vec![member] }.into(),
 			enclave: NitroConfig {
 				pcr0: vec![0; 48],
 				pcr1: vec![1; 48],

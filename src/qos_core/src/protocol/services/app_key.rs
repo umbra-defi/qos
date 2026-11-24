@@ -390,7 +390,7 @@ mod test {
 				env: PivotEnv::default(),
 			},
 			manifest_set: v1.manifest_set.clone(),
-			share_set: v1.share_set.clone(),
+			share_set: v1.share_set.clone().into(),
 			enclave: v1.enclave.clone(),
 			dns: None,
 			app_key_minter: minter.map(|m| m.public_key().to_bytes()),
@@ -918,7 +918,8 @@ mod test {
 		};
 		let mut manifest = envelope.manifest;
 		manifest.namespace.quorum_key = Vec::new();
-		manifest.share_set = ShareSet { threshold: 0, members: Vec::new() };
+		manifest.share_set =
+			ShareSet { threshold: 0, members: Vec::new() }.into();
 		manifest.no_quorum_key = true;
 		approved(args, manifest)
 	}
@@ -1068,7 +1069,7 @@ mod test {
 
 		let mut has_share_set = envelope.manifest;
 		has_share_set.share_set =
-			args.manifest_envelope.manifest.share_set.clone();
+			args.manifest_envelope.manifest.share_set.clone().into();
 		assert_eq!(
 			boot(
 				&mut unbooted("no_quorum_share_set"),

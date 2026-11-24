@@ -104,7 +104,7 @@ mod tests {
 
 		let processor = ProtocolProcessor::new(test_state());
 		let req = borsh::to_vec(&ProtocolMsg::BootGenesisRequest {
-			set: GenesisSet { members: vec![], threshold: 1 },
+			set: GenesisSet { members: vec![], threshold: 1, groups: vec![] },
 			dr_key: None,
 		})
 		.unwrap();

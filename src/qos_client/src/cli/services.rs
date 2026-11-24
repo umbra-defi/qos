@@ -19,8 +19,8 @@ use qos_core::protocol::{
 			ManifestEnvelope as ManifestEnvelopeV1, ManifestEnvelopeV0,
 			ManifestEnvelopeV2, ManifestSet, ManifestVersion, MemberPubKey,
 			Namespace, NitroConfig, PatchSet, PivotConfig as PivotConfigV1,
-			QuorumMember, RestartPolicy, ShareSet, VersionedManifest,
-			VersionedManifestEnvelope,
+			QuorumMember, RestartPolicy, ShareNode, ShareSet, ShareSetV2,
+			VersionedManifest, VersionedManifestEnvelope,
 		},
 		genesis::{GenesisOutput, GenesisSet},
 		key::EncryptedQuorumKey,
@@ -1051,7 +1051,7 @@ fn approve_manifest_programmatic_verifications(
 	}
 
 	// Verify share set composition
-	if manifest.share_set() != share_set {
+	if *manifest.share_set() != ShareSetV2::from(share_set.clone()) {
 		eprintln!("Share Set composition does not match");
 		return false;
 	}
@@ -1904,7 +1904,7 @@ fn proxy_re_encrypt_share_programmatic_verifications(
 		return false;
 	}
 
-	if !manifest.share_set().members.contains(member) {
+	if !manifest.share_set().contains(member) {
 		eprintln!(
 			"The provided share set key and alias are not part of the Share Set"
 		);
@@ -2584,7 +2584,7 @@ fn get_genesis_set<P: AsRef<Path>>(dir: P) -> GenesisSet {
 	// We want to try and build the same manifest regardless of the OS.
 	members.sort();
 
-	GenesisSet { members, threshold: find_threshold(dir) }
+	GenesisSet { members, threshold: find_threshold(dir), groups: vec![] }
 }
 
 fn find_approvals<P: AsRef<Path>>(
@@ -3077,7 +3077,7 @@ mod tests {
 				env: PivotEnv::new(),
 			},
 			manifest_set: manifest.manifest_set,
-			share_set: manifest.share_set,
+			share_set: manifest.share_set.into(),
 			enclave: manifest.enclave,
 			dns,
 			app_key_minter: None,
@@ -3138,7 +3138,7 @@ mod tests {
 					env: PivotEnv::new(),
 				},
 				manifest_set: manifest.manifest_set,
-				share_set: manifest.share_set,
+				share_set: manifest.share_set.into(),
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,
@@ -4153,7 +4153,7 @@ mod tests {
 					env: PivotEnv::new(),
 				},
 				manifest_set: manifest.manifest_set,
-				share_set: manifest.share_set,
+				share_set: manifest.share_set.into(),
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,
@@ -4197,7 +4197,7 @@ mod tests {
 					env: PivotEnv::new(),
 				},
 				manifest_set: manifest.manifest_set,
-				share_set: manifest.share_set,
+				share_set: manifest.share_set.into(),
 				enclave: manifest.enclave,
 				dns: None,
 				app_key_minter: None,

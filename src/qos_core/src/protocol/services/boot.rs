@@ -12,17 +12,19 @@ use crate::protocol::{
 
 pub mod env;
 pub mod manifest;
+pub mod share_tree;
 pub use env::{
 	MAX_PIVOT_ENV_NAME_LEN, MAX_PIVOT_ENV_VALUE_LEN, MAX_PIVOT_ENV_VARS,
 	PivotEnv, PivotEnvValue, PivotEnvVarName,
 };
 pub use manifest::v2::{
-	DnsConfig, ManifestEnvelopeV2, ManifestV2, PivotConfigV2,
+	DnsConfig, ManifestEnvelopeV2, ManifestV2, PivotConfigV2, ShareSetV2,
 };
 pub use manifest::{
 	ManifestBuilder, ManifestBuilderError, ManifestVersion, VersionedManifest,
 	VersionedManifestEnvelope,
 };
+pub use share_tree::{ShareGroup, ShareNode};
 
 fn decode_borsh<T, U, V>(
 	buf: &[u8],
@@ -752,8 +754,7 @@ pub(in crate::protocol::services) fn put_manifest_and_pivot(
 		if !manifest_envelope.namespace().quorum_key.is_empty() {
 			return Err(ProtocolError::NoQuorumKeyManifestNamesQuorumKey);
 		}
-		let share_set = manifest_envelope.share_set();
-		if share_set.threshold != 0 || !share_set.members.is_empty() {
+		if !manifest_envelope.share_set().is_empty() {
 			return Err(ProtocolError::NoQuorumKeyManifestHasShareSet);
 		}
 	}
