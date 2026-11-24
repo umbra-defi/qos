@@ -110,23 +110,26 @@ fn trees_at_every_limit_are_admitted() {
 }
 
 #[test]
-fn a_top_point_with_one_child_is_refused() {
-	assert_eq!(
+fn a_top_point_may_have_one_child() {
+	assert!(
 		Tree::new(Point {
-			threshold: 2,
-			children: vec![point(2, holders(0, 3))],
-		}),
-		Err(TreeError::TopTooFewChildren { children: 1 }),
-		"a single group at the top would rebuild the secret alone"
+			threshold: 1,
+			children: vec![point(2, holders(0, 3))]
+		})
+		.is_ok(),
+		"how many groups the top needs is the operator's policy, not the tree's"
 	);
 }
 
 #[test]
-fn a_top_point_with_threshold_one_is_refused() {
-	assert_eq!(
-		Tree::new(Point { threshold: 1, children: holders(0, 3) }),
-		Err(TreeError::TopThresholdBelowTwo { threshold: 1 }),
-		"a 1-of-m top point lets one group rebuild the secret alone"
+fn a_top_point_may_have_threshold_one() {
+	assert!(
+		Tree::new(Point {
+			threshold: 1,
+			children: vec![point(2, holders(0, 3)), point(1, holders(3, 2))],
+		})
+		.is_ok(),
+		"either group alone may rebuild the secret when the operator chooses so"
 	);
 }
 
@@ -375,14 +378,16 @@ fn malformed_encodings_are_refused() {
 
 #[test]
 fn decoding_applies_every_limit() {
-	let mut top_threshold_one = Tree::new(design_example())
+	let mut top_threshold_zero = Tree::new(design_example())
 		.expect("the design's example tree breaks no limit")
 		.encode();
-	top_threshold_one[1] = 1;
-	assert_eq!(
-		Tree::decode(&top_threshold_one),
-		Err(TreeError::TopThresholdBelowTwo { threshold: 1 }),
-		"a decoded tree is held to the top point's rule"
+	top_threshold_zero[1] = 0;
+	assert!(
+		matches!(
+			Tree::decode(&top_threshold_zero),
+			Err(TreeError::ThresholdZero { .. })
+		),
+		"a decoded tree is held to every limit, the top point's included"
 	);
 
 	let mut deep = vec![TREE_ENCODING_VERSION, 1, 1];

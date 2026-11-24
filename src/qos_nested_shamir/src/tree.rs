@@ -121,16 +121,6 @@ pub struct TreeDigest(pub [u8; DIGEST_BYTES]);
 /// Why a tree, or its encoding, was refused. Each limit has its own variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeError {
-	/// The top point has fewer than two children, so one group alone would rebuild the secret.
-	TopTooFewChildren {
-		/// The top point's number of children.
-		children: usize,
-	},
-	/// The top point's threshold is below two, so one group alone would rebuild the secret.
-	TopThresholdBelowTwo {
-		/// The top point's threshold.
-		threshold: u8,
-	},
 	/// A point has more than [`MAX_CHILDREN`] children.
 	TooManyChildren {
 		/// The point's path.
@@ -183,18 +173,6 @@ pub enum TreeError {
 impl fmt::Display for TreeError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::TopTooFewChildren { children } => {
-				write!(
-					formatter,
-					"the top point has {children} children, fewer than two"
-				)
-			}
-			Self::TopThresholdBelowTwo { threshold } => {
-				write!(
-					formatter,
-					"the top point's threshold {threshold} is below two"
-				)
-			}
 			Self::TooManyChildren { path, children } => write!(
 				formatter,
 				"point {path:?} has {children} children, more than {MAX_CHILDREN}"
@@ -248,8 +226,9 @@ impl std::error::Error for TreeError {}
 /// A nested threshold tree of holders that has passed every limit.
 ///
 /// The limits are: depth at most [`MAX_DEPTH`], at most [`MAX_HOLDERS`] holders, at most
-/// [`MAX_CHILDREN`] children per point, `1 ≤ threshold ≤ children` at every point, a top point
-/// with at least two children and a threshold of at least two, and no key digest twice.
+/// [`MAX_CHILDREN`] children per point, `1 ≤ threshold ≤ children` at every point, the top
+/// included, and no key digest twice. How many top-level groups recovery needs is the operator's
+/// policy, so the tree does not decide it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tree {
 	top: Point,
@@ -260,9 +239,8 @@ impl Tree {
 	///
 	/// # Errors
 	///
-	/// Returns [`TreeError::TopTooFewChildren`] or [`TreeError::TopThresholdBelowTwo`] when the top
-	/// point breaks its own rule, and otherwise the first other limit broken in depth-first order:
-	/// [`TreeError::TooManyChildren`], [`TreeError::ThresholdZero`],
+	/// Returns the first limit broken in depth-first order: [`TreeError::TooManyChildren`],
+	/// [`TreeError::ThresholdZero`],
 	/// [`TreeError::ThresholdAboveChildren`], [`TreeError::TooDeep`],
 	/// [`TreeError::TooManyHolders`] or [`TreeError::DuplicateKey`].
 	///
@@ -285,7 +263,6 @@ impl Tree {
 	/// assert_eq!(tree.holders().len(), 3);
 	/// ```
 	pub fn new(top: Point) -> Result<Self, TreeError> {
-		check_top(top.threshold, top.children.len())?;
 		let mut walk = Walk::default();
 		walk.visit_point(&top, Path::TOP)?;
 		Ok(Self { top })
@@ -368,16 +345,6 @@ impl Tree {
 	pub fn digest(&self) -> TreeDigest {
 		TreeDigest(Sha3_384::digest(self.encode()).into())
 	}
-}
-
-fn check_top(threshold: u8, children: usize) -> Result<(), TreeError> {
-	if children < 2 {
-		return Err(TreeError::TopTooFewChildren { children });
-	}
-	if threshold < 2 {
-		return Err(TreeError::TopThresholdBelowTwo { threshold });
-	}
-	Ok(())
 }
 
 fn check_point(
