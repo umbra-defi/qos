@@ -11,6 +11,7 @@ use std::net::IpAddr;
 use super::{
 	Approval, BridgeConfig, KeyDigests, Manifest, ManifestEnvelope,
 	ManifestEnvelopeV0, ManifestV0, Namespace, NitroConfig, RestartPolicy,
+	ShareHolderNode,
 };
 
 mod builder;
@@ -544,12 +545,12 @@ impl VersionedManifestEnvelope {
 					approval.clone(),
 				));
 			}
-			// The member is named by its key's digests, unique across the set,
-			// so its index counts it once.
-			let Some(index) = manifest_set.locate(&approval.member) else {
+			// The member is named by its key's digests, unique across the tree,
+			// so its place counts it once.
+			let Some(path) = manifest_set.locate(&approval.member)? else {
 				return Err(ProtocolError::NotManifestSetMember);
 			};
-			if !uniq_members.insert(index) {
+			if !uniq_members.insert(path) {
 				return Err(ProtocolError::DuplicateApproval);
 			}
 		}
@@ -560,7 +561,7 @@ impl VersionedManifestEnvelope {
 			.collect();
 		super::ensure_unique_members(&approvers)?;
 
-		if uniq_members.len() < manifest_set.threshold as usize {
+		if !manifest_set.is_satisfied_by_members(&approvers)? {
 			return Err(ProtocolError::NotEnoughApprovals);
 		}
 
@@ -983,6 +984,65 @@ mod tests {
 
 		let err = envelope.check_approvals().unwrap_err();
 		assert_eq!(err, ProtocolError::DuplicateQuorumMember);
+	}
+
+	#[test]
+	fn a_tree_manifest_set_boots_only_on_approvals_that_satisfy_it() {
+		use crate::protocol::services::{
+			boot::ShareGroup, genesis::GenesisSet,
+		};
+		let pairs: Vec<HybridPair> =
+			(0..3).map(|_| HybridPair::generate().unwrap()).collect();
+		let members: Vec<QuorumMember> = ["u0", "u1", "e0"]
+			.iter()
+			.zip(&pairs)
+			.map(|(alias, pair)| QuorumMember {
+				alias: (*alias).to_string(),
+				pub_key: pair.public_key().to_bytes(),
+			})
+			.collect();
+		let group =
+			|alias: &str, threshold, members: &[QuorumMember]| ShareGroup {
+				alias: alias.to_string(),
+				threshold,
+				members: members.to_vec(),
+				groups: vec![],
+			};
+		let mut manifest = sample_v2_manifest(members[0].clone());
+		manifest.manifest_set = ManifestSetV2::from_tree(&GenesisSet {
+			threshold: 2,
+			members: vec![],
+			groups: vec![
+				group("umbra", 1, &members[0..2]),
+				group("external", 1, &members[2..3]),
+			],
+		})
+		.unwrap();
+		let manifest_hash = canonical_json_hash(&manifest);
+		let envelope = |signers: &[usize]| {
+			VersionedManifestEnvelope::V2(ManifestEnvelopeV2 {
+				manifest: manifest.clone(),
+				manifest_set_approvals: signers
+					.iter()
+					.map(|i| Approval {
+						signature: pairs[*i].sign(&manifest_hash).unwrap(),
+						member: members[*i].clone(),
+					})
+					.collect(),
+				share_set_approvals: vec![],
+			})
+		};
+		assert!(envelope(&[0, 2]).check_approvals().is_ok());
+		assert!(envelope(&[1, 2]).check_approvals().is_ok());
+		assert_eq!(
+			envelope(&[0, 1]).check_approvals(),
+			Err(ProtocolError::NotEnoughApprovals),
+			"both Umbra members satisfy only their own group"
+		);
+		assert_eq!(
+			envelope(&[0, 2, 0]).check_approvals(),
+			Err(ProtocolError::DuplicateApproval)
+		);
 	}
 
 	#[test]

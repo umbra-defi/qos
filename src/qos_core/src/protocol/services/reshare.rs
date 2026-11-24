@@ -11,7 +11,7 @@
 //! A holder removed by a reshare keeps its old shard and the old envelope; it loses the key only
 //! once too few old shards survive to satisfy the old tree.
 
-use std::{collections::BTreeSet, fmt};
+use std::fmt;
 
 use qos_crypto::sha_512;
 use qos_nsm::types::{NsmRequest, NsmResponse};
@@ -105,14 +105,11 @@ pub(in crate::protocol) fn reshare_quorum_key(
 		.filter(|approval| approval.verify(&digest).is_ok())
 		.collect();
 
-	let manifest_set = manifest.manifest_set()?;
-	let manifest_approvers: BTreeSet<_> = approvals
-		.iter()
-		.filter_map(|approval| manifest_set.locate(&approval.member))
-		.collect();
-	if manifest_approvers.len() < manifest_set.threshold as usize {
+	if !manifest.manifest_set()?.is_satisfied_by_members(
+		approvals.iter().map(|approval| &approval.member),
+	)? {
 		return Err(not_approved(
-			"the approvals do not meet the manifest set's threshold",
+			"the approvals do not satisfy the manifest set",
 		));
 	}
 

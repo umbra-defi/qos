@@ -3143,9 +3143,10 @@ fn find_approvals<P: AsRef<Path>>(
 				});
 
 			assert!(
-				manifest
-					.manifest_set()
-					.is_ok_and(|set| set.locate(&approval.member).is_some()),
+				manifest.manifest_set().is_ok_and(|set| {
+					set.locate(&approval.member)
+						.is_ok_and(|path| path.is_some())
+				}),
 				"Found approval from member ({:?}) not included in the Manifest Set",
 				approval.member.alias
 			);

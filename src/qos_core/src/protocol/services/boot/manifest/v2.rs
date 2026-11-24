@@ -10,19 +10,24 @@ use crate::protocol::{
 	},
 };
 
-/// The manifest set of a v2 manifest: `threshold` of its members must approve a manifest. Members
-/// are named by key digest; each approval carries the approver's full key, which must digest to a
-/// member.
+/// The manifest set of a v2 manifest: a tree of approvers, the same shape as the share set. A
+/// manifest is approved once its approvals satisfy the top: a group is satisfied once `threshold`
+/// of its members have approved and its groups are satisfied, every threshold from 1 to its
+/// node's children. Members are named by key digest; each approval carries the approver's full
+/// key, which must digest to a member. A flat set has `groups: []`.
 #[derive(
 	PartialEq, Eq, Debug, Clone, Default, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManifestSetV2 {
-	/// Approvals needed.
+	/// Children whose approval the top of the tree needs: members that approved and groups that
+	/// are satisfied.
 	#[serde(with = "qos_json::string_or_numeric")]
 	pub threshold: u32,
 	/// Members who may approve.
 	pub members: Vec<MemberDigest>,
+	/// Groups, each satisfied once `threshold` of its own children are; `[]` for a flat set.
+	pub groups: Vec<ShareHolderGroup>,
 }
 
 use super::ManifestVersion;
@@ -59,7 +64,7 @@ pub struct PivotConfigV2 {
 /// The share set of a v2 manifest: the top of the holder tree the quorum key envelope's key is
 /// dealt over, satisfied once `threshold` of its children are, its members first, then its groups.
 /// Holders are named by key digest, and `envelope_digest` names the envelope. A manifest without a
-/// quorum key has an empty one, which serializes as `{"threshold":0,"members":[]}`.
+/// quorum key has an empty one, which serializes as `{"threshold":0,"members":[],"groups":[]}`.
 #[derive(
 	PartialEq, Eq, Debug, Clone, Default, serde::Serialize, serde::Deserialize,
 )]
@@ -70,8 +75,7 @@ pub struct ShareSetV2 {
 	pub threshold: u32,
 	/// Holders of a shard of the envelope key.
 	pub members: Vec<MemberDigest>,
-	/// Groups, each rebuilding one share of the envelope key.
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	/// Groups, each rebuilding one share of the envelope key; `[]` for a flat set.
 	pub groups: Vec<ShareHolderGroup>,
 	/// [`QuorumKeyEnvelope::digest`] of the envelope the quorum key is sealed in; absent only for
 	/// a manifest without a quorum key.

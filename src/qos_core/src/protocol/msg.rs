@@ -739,7 +739,11 @@ mod test {
 				args: vec![],
 				env: PivotEnv::new(),
 			},
-			manifest_set: ManifestSetV2 { threshold: 1, members: vec![] },
+			manifest_set: ManifestSetV2 {
+				threshold: 1,
+				members: vec![],
+				groups: vec![],
+			},
 			share_set: ShareSet { threshold: 1, members: vec![] }
 				.try_into()
 				.unwrap(),
@@ -792,7 +796,11 @@ mod test {
 					args: vec![],
 					env: PivotEnv::new(),
 				},
-				manifest_set: ManifestSetV2 { threshold: 1, members: vec![] },
+				manifest_set: ManifestSetV2 {
+					threshold: 1,
+					members: vec![],
+					groups: vec![],
+				},
 				share_set: ShareSet { threshold: 1, members: vec![] }
 					.try_into()
 					.unwrap(),
