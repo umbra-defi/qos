@@ -224,6 +224,7 @@ impl Fixture {
 			std::fs::copy(&primary_pub, set_dir.join("dev.pub")).unwrap();
 		}
 		std::fs::copy(&primary_pub, &quorum_key_path).unwrap();
+		write_quorum_key_envelope(&primary_pub, &root);
 		std::fs::copy(
 			integration_dist,
 			qos_release_dir.join("aws-x86_64.pcrs"),
@@ -330,6 +331,34 @@ impl Fixture {
 			self.manifest_path.to_str().unwrap(),
 		]));
 	}
+}
+
+/// Writes a quorum key envelope dealt over the fixture's one-member share set
+/// beside `quorum_key.pub`, where generate-manifest and approve-manifest read
+/// it. The sealed seed is arbitrary: these commands only name the envelope.
+fn write_quorum_key_envelope(
+	member_pub: &std::path::Path,
+	root: &std::path::Path,
+) {
+	use qos_core::protocol::services::{
+		boot::{QuorumMember, ShareHolderNode, ShareNode},
+		envelope::seal_quorum_key,
+		genesis::GenesisSet,
+	};
+	let pub_key =
+		qos_hybrid::HybridPublic::from_hex_file(member_pub).unwrap().to_bytes();
+	let set = GenesisSet {
+		threshold: 1,
+		members: vec![QuorumMember {
+			alias: "dev".to_string(),
+			pub_key: pub_key.clone(),
+		}],
+		groups: vec![],
+	};
+	let tree = set.holder_set().unwrap().tree().unwrap();
+	let (envelope, _) = seal_quorum_key(&[7; 32], &pub_key, &tree).unwrap();
+	std::fs::write(root.join("quorum_key.envelope"), envelope.encode())
+		.unwrap();
 }
 
 fn run_qos_client<const N: usize>(args: [&str; N]) -> Output {
