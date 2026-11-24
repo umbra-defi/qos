@@ -176,6 +176,14 @@ pub enum Error {
 	/// The share set is not a valid holder tree, or a key in it is not a hybrid
 	/// key.
 	InvalidShareSet(qos_core::protocol::ProtocolError),
+	/// The reshare output seals another quorum key than the one expected.
+	ReshareOutputNotForQuorumKey,
+	/// The reshare output deals over another holder tree than the one approved.
+	ReshareOutputNotForShareSet,
+	/// The reshare output holds no shard for this member's key and alias.
+	NotAReshareHolder,
+	/// The member's decrypted shard is not the one the reshare output names.
+	ReshareShardDoesNotMatch,
 	/// The manifest names no app key minter, so it has no app key to mint.
 	ManifestNamesNoAppKeyMinter,
 	/// The master seed is not the manifest's app key minter.
@@ -2359,10 +2367,21 @@ pub(crate) fn reshare_quorum_key<P: AsRef<Path>>(
 	Ok(())
 }
 
-/// A new holder's `after-reshare`: check the attested reshare output, decrypt
-/// the holder's shard, and keep it with a copy of the new envelope.
+pub(crate) struct AfterReshareArgs<P: AsRef<Path>> {
+	pub holder: AfterGenesisArgs<P>,
+	pub quorum_key_path: P,
+	pub share_set_dir: P,
+}
+
+/// A new holder's `after-reshare`: check the attested reshare output seals the
+/// expected quorum key over the approved holder tree, decrypt the holder's
+/// shard, and keep it with a copy of the new envelope.
 pub(crate) fn after_reshare<P: AsRef<Path>>(
-	AfterGenesisArgs {
+	AfterReshareArgs { holder, quorum_key_path, share_set_dir }: AfterReshareArgs<
+		P,
+	>,
+) -> Result<(), Error> {
+	let AfterGenesisArgs {
 		mut pair,
 		share_path,
 		alias,
@@ -2371,8 +2390,7 @@ pub(crate) fn after_reshare<P: AsRef<Path>>(
 		pcr3_preimage_path,
 		unsafe_skip_attestation,
 		validation_time_override,
-	}: AfterGenesisArgs<P>,
-) -> Result<(), Error> {
+	} = holder;
 	let dir = namespace_dir.as_ref();
 	let output = ReshareOutput::try_from_slice(
 		&fs::read(dir.join(RESHARE_OUTPUT_FILE)).map_err(|e| {
@@ -2401,6 +2419,20 @@ pub(crate) fn after_reshare<P: AsRef<Path>>(
 		)?;
 	}
 
+	let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
+		.map_err(Error::FailedToReadQuorumPublicKey)?;
+	if output.quorum_key != quorum_key.to_bytes() {
+		return Err(Error::ReshareOutputNotForQuorumKey);
+	}
+	if output.set != get_genesis_set(&share_set_dir) {
+		return Err(Error::ReshareOutputNotForShareSet);
+	}
+	let envelope = QuorumKeyEnvelope::decode(&output.envelope)
+		.map_err(|e| Error::FailedToReadQuorumKeyEnvelope(format!("{e}")))?;
+	if output.set.holder_set()?.tree()?.digest().0 != envelope.tree_digest {
+		return Err(Error::QuorumKeyEnvelopeNotForShareSet);
+	}
+
 	let public = pair.public_key_bytes()?;
 	let member_output = output
 		.member_outputs
@@ -2409,20 +2441,15 @@ pub(crate) fn after_reshare<P: AsRef<Path>>(
 			m.share_set_member.pub_key == public
 				&& m.share_set_member.alias == alias
 		})
-		.expect("Could not find a member output associated with the setup key");
-	let plaintext_shard = pair.decrypt(&member_output.encrypted_shard)?;
-	assert_eq!(
-		sha_512(&plaintext_shard),
-		member_output.shard_hash,
-		"Expected shard hash do not match the actual shard hash"
-	);
-	let envelope = QuorumKeyEnvelope::decode(&output.envelope)
-		.map_err(|e| Error::FailedToReadQuorumKeyEnvelope(format!("{e}")))?;
-	assert_eq!(
-		&plaintext_shard[..envelope.deal_id.0.len()],
-		&envelope.deal_id.0[..],
-		"The shard belongs to another deal than the reshare's envelope"
-	);
+		.ok_or(Error::NotAReshareHolder)?;
+	let plaintext_shard =
+		Zeroizing::new(pair.decrypt(&member_output.encrypted_shard)?);
+	if sha_512(&plaintext_shard) != member_output.shard_hash
+		|| plaintext_shard.get(..envelope.deal_id.0.len())
+			!= Some(&envelope.deal_id.0[..])
+	{
+		return Err(Error::ReshareShardDoesNotMatch);
+	}
 	drop(plaintext_shard);
 
 	write_with_msg(
@@ -4926,6 +4953,111 @@ mod tests {
 			dir.threshold("external.team1.quorum_threshold", 1);
 			dir.member("external.team1.c0", "c0");
 			get_genesis_set(dir.path());
+		}
+
+		#[test]
+		fn after_reshare_takes_only_the_expected_key_and_tree() {
+			use qos_core::protocol::services::{
+				envelope::{encode_shard, seal_quorum_key},
+				genesis::GenesisMemberOutput,
+				reshare::ReshareOutput,
+			};
+
+			use qos_core::protocol::services::boot::{
+				ShareHolderNode, ShareNode,
+			};
+			use qos_crypto::sha_512;
+
+			use super::super::{
+				AfterGenesisArgs, AfterReshareArgs, Error, PairOrYubi,
+				RESHARE_OUTPUT_FILE, after_reshare,
+			};
+
+			let dir = Dir::new("after_reshare_checks");
+			let set_dir = dir.path().join("set");
+			let other_set_dir = dir.path().join("other");
+			let namespace_dir = dir.path().join("namespace");
+			for path in [&set_dir, &other_set_dir, &namespace_dir] {
+				std::fs::create_dir_all(path).unwrap();
+			}
+			let holder = HybridPair::generate().unwrap();
+			for path in [&set_dir, &other_set_dir] {
+				std::fs::write(path.join("quorum_threshold"), "1").unwrap();
+				holder.public_key().to_hex_file(path.join("u0.pub")).unwrap();
+			}
+			HybridPair::generate()
+				.unwrap()
+				.public_key()
+				.to_hex_file(other_set_dir.join("e0.pub"))
+				.unwrap();
+
+			let set = get_genesis_set(&set_dir);
+			let holders = set.holder_set().unwrap();
+			let quorum = HybridPair::generate().unwrap();
+			let quorum_key = quorum.public_key().to_bytes();
+			let (envelope, shards) = seal_quorum_key(
+				&quorum.to_master_seed(),
+				&quorum_key,
+				&holders.tree().unwrap(),
+			)
+			.unwrap();
+			let member = set.members[0].clone();
+			let path = holders.locate(&member).unwrap().unwrap();
+			let encoded = encode_shard(&envelope.deal_id, &shards[&path]);
+			let output = ReshareOutput {
+				set: set.clone(),
+				quorum_key,
+				member_outputs: vec![GenesisMemberOutput {
+					share_set_member: member,
+					encrypted_shard: holder
+						.public_key()
+						.encrypt(&encoded)
+						.unwrap(),
+					shard_hash: sha_512(&encoded),
+				}],
+				envelope: envelope.encode(),
+			};
+			std::fs::write(
+				namespace_dir.join(RESHARE_OUTPUT_FILE),
+				borsh::to_vec(&output).unwrap(),
+			)
+			.unwrap();
+			let quorum_key_path = dir.path().join("quorum_key.pub");
+			quorum.public_key().to_hex_file(&quorum_key_path).unwrap();
+			let other_key_path = dir.path().join("other_key.pub");
+			HybridPair::generate()
+				.unwrap()
+				.public_key()
+				.to_hex_file(&other_key_path)
+				.unwrap();
+
+			let run = |quorum_key_path: &Path, share_set_dir: &Path| {
+				after_reshare(AfterReshareArgs {
+					holder: AfterGenesisArgs {
+						pair: PairOrYubi::Pair(holder.clone()),
+						share_path: dir.path().join("u0.share"),
+						alias: "u0".to_string(),
+						namespace_dir: namespace_dir.clone(),
+						qos_release_dir_path: dir.path().to_path_buf(),
+						pcr3_preimage_path: dir.path().join("pcr3"),
+						unsafe_skip_attestation: true,
+						validation_time_override: None,
+					},
+					quorum_key_path: quorum_key_path.to_path_buf(),
+					share_set_dir: share_set_dir.to_path_buf(),
+				})
+			};
+			assert!(matches!(
+				run(&other_key_path, &set_dir),
+				Err(Error::ReshareOutputNotForQuorumKey)
+			));
+			assert!(matches!(
+				run(&quorum_key_path, &other_set_dir),
+				Err(Error::ReshareOutputNotForShareSet)
+			));
+			assert!(!dir.path().join("u0.share").exists());
+			run(&quorum_key_path, &set_dir).unwrap();
+			assert!(dir.path().join("u0.share.envelope").exists());
 		}
 
 		#[test]

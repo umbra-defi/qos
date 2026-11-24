@@ -747,6 +747,19 @@ impl Command {
 			.token(Self::validation_time_override_token())
 	}
 
+	fn after_reshare() -> Parser {
+		Self::after_genesis()
+			.token(
+				Token::new(
+					QUORUM_KEY_PATH,
+					"The namespace's quorum public key, from your pin, not the coordinator.",
+				)
+				.takes_value(true)
+				.required(true),
+			)
+			.token(Self::share_set_dir_token())
+	}
+
 	fn verify_genesis() -> Parser {
 		Parser::new()
 			.token(Self::namespace_dir_token())
@@ -1035,7 +1048,8 @@ impl GetParserForCommand for Command {
 			}
 			Self::GenerateFileKey => Self::generate_file_key(),
 			Self::BootGenesis => Self::boot_genesis(),
-			Self::AfterGenesis | Self::AfterReshare => Self::after_genesis(),
+			Self::AfterGenesis => Self::after_genesis(),
+			Self::AfterReshare => Self::after_reshare(),
 			Self::VerifyGenesis => Self::verify_genesis(),
 			Self::GenerateManifest => Self::generate_manifest(),
 			Self::ApproveManifest => Self::approve_manifest(),
@@ -1785,15 +1799,21 @@ mod handlers {
 
 	pub(super) fn after_reshare(opts: &ClientOpts) {
 		let pair = get_pair_or_yubi(opts);
-		if let Err(e) = services::after_reshare(services::AfterGenesisArgs {
-			pair,
-			share_path: opts.share_path(),
-			alias: opts.alias(),
-			namespace_dir: opts.namespace_dir(),
-			qos_release_dir_path: opts.qos_release_dir(),
-			pcr3_preimage_path: opts.pcr3_preimage_path(),
-			unsafe_skip_attestation: opts.unsafe_skip_attestation(),
-			validation_time_override: opts.validation_time_override(),
+		if let Err(e) = services::after_reshare(services::AfterReshareArgs {
+			holder: services::AfterGenesisArgs {
+				pair,
+				share_path: opts.share_path(),
+				alias: opts.alias(),
+				namespace_dir: opts.namespace_dir(),
+				qos_release_dir_path: opts.qos_release_dir(),
+				pcr3_preimage_path: opts.pcr3_preimage_path(),
+				unsafe_skip_attestation: opts.unsafe_skip_attestation(),
+				validation_time_override: opts.validation_time_override(),
+			},
+			quorum_key_path: opts
+				.quorum_key_path_optional()
+				.expect("`--quorum-key-path` is a required arg"),
+			share_set_dir: opts.share_set_dir(),
 		}) {
 			println!("Error: {e:?}");
 			std::process::exit(1);

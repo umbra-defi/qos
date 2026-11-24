@@ -41,7 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key only once too few old shards survive to satisfy the old tree.
 - `qos_client`: `provide-quorum-key-envelope`, `approve-reshare`, `reshare-quorum-key` and
   `after-reshare`; `after-genesis` keeps the holder's copy of the envelope as `<shard>.envelope`,
-  and `boot-genesis` writes `quorum_key.envelope` beside `quorum_key.pub`.
+  and `boot-genesis` writes `quorum_key.envelope` beside `quorum_key.pub`. `after-reshare` takes
+  the expected `--quorum-key-path` and the approved `--share-set-dir`, and refuses an output that
+  seals another quorum key or deals over another tree.
+
+### Changed
+- A refused shard no longer spends the boot: the provision route leaves the enclave waiting for
+  shards on any error, so a holder's retry, a shard before the envelope, a stray post or a failed
+  rebuild can be followed by the right posts. A shard that does not match its holder's point hint
+  is refused alone, and each holder's approval is recorded once.
+- A reshare counts only the approvals that verify, so one bad approval cannot block the others.
 
 ### Fixed
 - `boot-genesis` counted only the share set's root members against the genesis output, so any tree
