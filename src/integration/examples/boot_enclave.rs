@@ -14,8 +14,8 @@ use qos_core::protocol::{
 	ProtocolPhase,
 	services::{
 		boot::{
-			Approval, ManifestSet, Namespace, ShareSet, ShareSetV2,
-			VersionedManifest,
+			Approval, ManifestSet, ManifestSetV2, Namespace, ShareSet,
+			ShareSetV2, VersionedManifest,
 		},
 		envelope::QuorumKeyEnvelope,
 		genesis::{GenesisMemberOutput, GenesisOutput},
@@ -134,7 +134,10 @@ async fn main() {
 	};
 	assert_eq!(*manifest.namespace(), namespace_field);
 	let manifest_set = ManifestSet { threshold: 2, members: members.clone() };
-	assert_eq!(*manifest.manifest_set(), manifest_set);
+	assert_eq!(
+		manifest.manifest_set().unwrap().normalised(),
+		ManifestSetV2::try_from(&manifest_set).unwrap().normalised()
+	);
 	let envelope = QuorumKeyEnvelope::decode(&genesis_output.envelope).unwrap();
 	let holders = ShareSetV2 {
 		envelope_digest: Some(envelope.digest().to_vec()),

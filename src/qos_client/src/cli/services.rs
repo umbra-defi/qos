@@ -15,14 +15,14 @@ use qos_core::protocol::{
 	services::{
 		app_key::{EncryptedAppKey, app_key_mint_order_message},
 		boot::{
-			Approval, BridgeConfig, DnsConfig, Manifest as ManifestV1,
-			ManifestBuilder, ManifestBuilderError,
+			Approval, BridgeConfig, DnsConfig, KeyDigests,
+			Manifest as ManifestV1, ManifestBuilder, ManifestBuilderError,
 			ManifestEnvelope as ManifestEnvelopeV1, ManifestEnvelopeV0,
-			ManifestEnvelopeV2, ManifestSet, ManifestVersion, MemberPubKey,
-			Namespace, NitroConfig, PatchSet, PivotConfig as PivotConfigV1,
-			QuorumMember, RestartPolicy, ShareGroup, ShareHolderNode,
-			ShareNode, ShareSet, ShareSetV2, VersionedManifest,
-			VersionedManifestEnvelope,
+			ManifestEnvelopeV2, ManifestSet, ManifestSetV2, ManifestVersion,
+			MemberPubKey, Namespace, NitroConfig, PatchSet,
+			PivotConfig as PivotConfigV1, QuorumMember, RestartPolicy,
+			ShareGroup, ShareHolderNode, ShareNode, ShareSet, ShareSetV2,
+			VersionedManifest, VersionedManifestEnvelope,
 		},
 		envelope::QuorumKeyEnvelope,
 		genesis::{GenesisOutput, GenesisSet},
@@ -1074,7 +1074,9 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 	let expected_minter = app_key_minter_path
 		.map(|path| HybridPublic::from_hex_file(path).map(|key| key.to_bytes()))
 		.transpose()?;
-	if manifest.app_key_minter() != expected_minter.as_deref() {
+	let expected_minter =
+		expected_minter.map(|key| KeyDigests::of(&key)).transpose()?;
+	if manifest.app_key_minter() != expected_minter.as_ref() {
 		eprintln!("App key minter does not match");
 		eprintln!("Exiting early without approving manifest");
 		std::process::exit(1);
@@ -1168,7 +1170,7 @@ fn approve_manifest_programmatic_verifications(
 	quorum_key: &[u8],
 ) -> bool {
 	// Verify manifest set composition
-	if manifest.manifest_set() != manifest_set {
+	if !names_manifest_set(manifest, manifest_set) {
 		eprintln!("Manifest Set composition does not match");
 		return false;
 	}
@@ -1637,7 +1639,8 @@ pub(crate) fn sign_app_key_mint_order<P: AsRef<Path>>(
 		.app_key_minter()
 		.ok_or(Error::ManifestNamesNoAppKeyMinter)?;
 	let minter_pair = HybridPair::from_hex_file(master_seed_path)?;
-	if minter_pair.public_key().to_bytes() != minter {
+	let minter_public_key = minter_pair.public_key().to_bytes();
+	if !minter.names(&minter_public_key) {
 		return Err(Error::NotTheAppKeyMinter);
 	}
 
@@ -1656,7 +1659,12 @@ pub(crate) fn sign_app_key_mint_order<P: AsRef<Path>>(
 	))?;
 	write_with_msg(
 		order_path.as_ref(),
-		qos_hex::encode(&order).as_bytes(),
+		format!(
+			"{}\n{}\n",
+			qos_hex::encode(&order),
+			qos_hex::encode(&minter_public_key)
+		)
+		.as_bytes(),
 		"App key mint order",
 	);
 
@@ -1674,9 +1682,12 @@ pub(crate) fn mint_app_key<P: AsRef<Path>>(
 			error: e.to_string(),
 		}
 	})?;
-	let req = ProtocolMsg::MintAppKeyRequest {
-		order_signature: qos_hex::decode(order.trim())?,
-	};
+	// The order file holds the signature, then the minter's public key.
+	let mut lines = order.lines().map(str::trim);
+	let order_signature = qos_hex::decode(lines.next().unwrap_or_default())?;
+	let minter_public_key = qos_hex::decode(lines.next().unwrap_or_default())?;
+	let req =
+		ProtocolMsg::MintAppKeyRequest { order_signature, minter_public_key };
 
 	match request::post(uri, &req).unwrap() {
 		ProtocolMsg::MintAppKeyResponse => println!("App key minted."),
@@ -2029,6 +2040,19 @@ pub(crate) fn proxy_re_encrypt_share<P: AsRef<Path>>(
 	Ok(())
 }
 
+/// Whether the manifest names `expected`'s members, by key digest, and its
+/// threshold, in any order.
+fn names_manifest_set(
+	manifest: &VersionedManifest,
+	expected: &ManifestSet,
+) -> bool {
+	let Ok(named) = manifest.manifest_set() else {
+		return false;
+	};
+	ManifestSetV2::try_from(expected)
+		.is_ok_and(|expected| expected.normalised() == named.normalised())
+}
+
 fn proxy_re_encrypt_share_programmatic_verifications(
 	manifest_envelope: &VersionedManifestEnvelope,
 	manifest_set: &ManifestSet,
@@ -2041,7 +2065,7 @@ fn proxy_re_encrypt_share_programmatic_verifications(
 		return false;
 	}
 
-	if *manifest.manifest_set() != *manifest_set {
+	if !names_manifest_set(&manifest, manifest_set) {
 		eprintln!(
 			"Manifest's manifest set does not match locally found Manifest Set"
 		);
@@ -3092,7 +3116,9 @@ fn find_approvals<P: AsRef<Path>>(
 				});
 
 			assert!(
-				manifest.manifest_set().members.contains(&approval.member),
+				manifest
+					.manifest_set()
+					.is_ok_and(|set| set.locate(&approval.member).is_some()),
 				"Found approval from member ({:?}) not included in the Manifest Set",
 				approval.member.alias
 			);
@@ -3107,7 +3133,12 @@ fn find_approvals<P: AsRef<Path>>(
 			Some(approval)
 		})
 		.collect();
-	assert!(approvals.len() >= manifest.manifest_set().threshold as usize);
+	assert!(
+		approvals.len()
+			>= manifest
+				.manifest_set()
+				.map_or(usize::MAX, |set| set.threshold as usize)
+	);
 
 	approvals
 }
@@ -3554,7 +3585,7 @@ mod tests {
 				args: manifest.pivot.args,
 				env: PivotEnv::new(),
 			},
-			manifest_set: manifest.manifest_set,
+			manifest_set: (&manifest.manifest_set).try_into().unwrap(),
 			share_set: manifest.share_set.try_into().unwrap(),
 			enclave: manifest.enclave,
 			dns,
@@ -3615,7 +3646,7 @@ mod tests {
 					args: manifest.pivot.args,
 					env: PivotEnv::new(),
 				},
-				manifest_set: manifest.manifest_set,
+				manifest_set: (&manifest.manifest_set).try_into().unwrap(),
 				share_set: manifest.share_set.try_into().unwrap(),
 				enclave: manifest.enclave,
 				dns: None,
@@ -4662,7 +4693,7 @@ mod tests {
 					args: manifest.pivot.args,
 					env: PivotEnv::new(),
 				},
-				manifest_set: manifest.manifest_set,
+				manifest_set: (&manifest.manifest_set).try_into().unwrap(),
 				share_set: manifest.share_set.try_into().unwrap(),
 				enclave: manifest.enclave,
 				dns: None,
@@ -4706,7 +4737,7 @@ mod tests {
 					args: manifest.pivot.args,
 					env: PivotEnv::new(),
 				},
-				manifest_set: manifest.manifest_set,
+				manifest_set: (&manifest.manifest_set).try_into().unwrap(),
 				share_set: manifest.share_set.try_into().unwrap(),
 				enclave: manifest.enclave,
 				dns: None,
