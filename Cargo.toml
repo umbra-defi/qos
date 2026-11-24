@@ -14,6 +14,7 @@ members = [
   "src/qos_test_primitives",
   "src/qos_hybrid",
   "src/qos_nsm",
+  "src/qos_nested_shamir",
   "src/signed_echo",
   # special members that are not default-members
   "src/qos_crypto/fuzz",
@@ -36,6 +37,7 @@ default-members = [
   "src/qos_test_primitives",
   "src/qos_hybrid",
   "src/qos_nsm",
+  "src/qos_nested_shamir",
   "src/signed_echo",
 ]
 exclude = [
@@ -123,6 +125,7 @@ qos_net = { path = "src/qos_net", package = "umbra_qos_net", version = "0.18.0",
 qos_test_harness = { path = "src/qos_test_harness", version = "0.14.1" }
 qos_nsm = { path = "src/qos_nsm", package = "umbra_qos_nsm", version = "0.18.0", default-features = false }
 qos_hybrid = { path = "src/qos_hybrid", package = "umbra_qos_hybrid", version = "0.18.0" }
+qos_nested_shamir = { path = "src/qos_nested_shamir", package = "umbra_qos_nested_shamir", version = "0.18.0" }
 qos_test_primitives = { path = "src/qos_test_primitives", package = "umbra_qos_test_primitives", version = "0.18.0" }
 
 # used for pivot_download integration/example only
