@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not provision. `VersionedManifest::share_set` returns `Option<&ShareSetV2>`, and
   `ManifestBuilder` takes `share_holders` for v2 and `share_set` only for v1.
 - `qos_crypto::share_tree` is removed.
+- Every key a v2 manifest names is a digest: the manifest set's members, like the share set's
+  holders, are `MemberDigest`s (alias and the SHA3-384 digests of the receiving and signing key
+  halves), and `appKeyMinter` is a `KeyDigests`. Whoever acts presents the full key, which must
+  digest to the name: approvals already carry it, and `MintAppKeyRequest` gains
+  `minter_public_key`. Every v2 manifest's hash changes, including those without a quorum key.
+  `VersionedManifest::manifest_set` returns a digested `ManifestSetV2` for every version, and the
+  mint order file holds the signature, then the minter's public key.
 
 ### Added
 - `qos_nested_shamir`: Umbra's guardian nested-Shamir crate, with the top threshold left to the

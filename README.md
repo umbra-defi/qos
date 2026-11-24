@@ -183,7 +183,7 @@ There are two types of quorum sets:
 
 ### Manifest Set
 
-The collection of members who can approve a manifest. In the typical instance provisioning flow, the Manifest Set will approve the details of the Manifest and then the Share Set members can trust a manifest if it has threshold approvals from the Manifest Set. This creates a logical division of responsibilities between Share Keys and Manifest Keys that enables better key usage practices and organizations to scale parts of the provision flow separately.
+The collection of members who can approve a manifest. In the typical instance provisioning flow, the Manifest Set will approve the details of the Manifest and then the Share Set members can trust a manifest if it has threshold approvals from the Manifest Set. This creates a logical division of responsibilities between Share Keys and Manifest Keys that enables better key usage practices and organizations to scale parts of the provision flow separately. A v2 manifest names every key by digest, the Manifest Set's members and the app key minter as the Share Set's holders: an alias and the SHA3-384 digests of the key's receiving and signing halves. An approval carries the approver's full key, which must digest to a member.
 
 ### Share Set
 
