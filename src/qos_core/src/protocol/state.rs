@@ -802,11 +802,19 @@ mod handlers {
 		req: &ProtocolMsg,
 		state: &mut ProtocolState,
 	) -> ProtocolRouteResponse {
-		if let ProtocolMsg::MintAppKeyRequest { order_signature } = req {
+		if let ProtocolMsg::MintAppKeyRequest {
+			order_signature,
+			minter_public_key,
+		} = req
+		{
 			Some(
-				app_key::mint_app_key(state, order_signature)
-					.map(|()| ProtocolMsg::MintAppKeyResponse)
-					.map_err(ProtocolMsg::ProtocolErrorResponse),
+				app_key::mint_app_key(
+					state,
+					order_signature,
+					minter_public_key,
+				)
+				.map(|()| ProtocolMsg::MintAppKeyResponse)
+				.map_err(ProtocolMsg::ProtocolErrorResponse),
 			)
 		} else {
 			None

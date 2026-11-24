@@ -3,8 +3,9 @@
 use crate::protocol::{
 	Hash256,
 	services::boot::{
-		BridgeConfig, Manifest, ManifestSet, Namespace, NitroConfig, PatchSet,
-		PivotConfig, PivotConfigV2, PivotEnv, RestartPolicy, ShareSet,
+		BridgeConfig, KeyDigests, Manifest, ManifestSet, Namespace,
+		NitroConfig, PatchSet, PivotConfig, PivotConfigV2, PivotEnv,
+		RestartPolicy, ShareSet,
 	},
 };
 
@@ -54,6 +55,11 @@ pub enum ManifestBuilderError {
 	/// A v2 manifest names a holder tree, not a flat share set.
 	#[error("manifest v2 takes share holders, not a flat share set")]
 	V2DoesNotSupportFlatShareSet,
+	/// A manifest set member or the app key minter is not a hybrid public key.
+	#[error(
+		"a manifest set member or the app key minter is not a hybrid public key"
+	)]
+	InvalidMemberKey,
 }
 
 /// Builds a versioned manifest using either the v1 or v2 schema.
@@ -334,11 +340,17 @@ impl ManifestBuilder {
 						args,
 						env: self.pivot_env.unwrap_or_default(),
 					},
-					manifest_set,
+					manifest_set: (&manifest_set)
+						.try_into()
+						.map_err(|_| ManifestBuilderError::InvalidMemberKey)?,
 					share_set,
 					enclave,
 					dns: self.dns,
-					app_key_minter: self.app_key_minter,
+					app_key_minter: self
+						.app_key_minter
+						.map(|key| KeyDigests::of(&key))
+						.transpose()
+						.map_err(|_| ManifestBuilderError::InvalidMemberKey)?,
 					no_quorum_key: self.no_quorum_key,
 				}))
 			}

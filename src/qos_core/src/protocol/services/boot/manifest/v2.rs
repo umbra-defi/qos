@@ -5,10 +5,25 @@ use std::net::IpAddr;
 use crate::protocol::{
 	Hash256,
 	services::boot::{
-		Approval, BridgeConfig, ManifestSet, Namespace, NitroConfig, PivotEnv,
-		RestartPolicy, ShareHolder, ShareHolderGroup,
+		Approval, BridgeConfig, KeyDigests, MemberDigest, Namespace,
+		NitroConfig, PivotEnv, RestartPolicy, ShareHolderGroup,
 	},
 };
+
+/// The manifest set of a v2 manifest: `threshold` of its members must approve a manifest. Members
+/// are named by key digest; each approval carries the approver's full key, which must digest to a
+/// member.
+#[derive(
+	PartialEq, Eq, Debug, Clone, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestSetV2 {
+	/// Approvals needed.
+	#[serde(with = "qos_json::string_or_numeric")]
+	pub threshold: u32,
+	/// Members who may approve.
+	pub members: Vec<MemberDigest>,
+}
 
 use super::ManifestVersion;
 
@@ -54,7 +69,7 @@ pub struct ShareSetV2 {
 	#[serde(with = "qos_json::string_or_numeric")]
 	pub threshold: u32,
 	/// Holders of a shard of the envelope key.
-	pub members: Vec<ShareHolder>,
+	pub members: Vec<MemberDigest>,
 	/// Groups, each rebuilding one share of the envelope key.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub groups: Vec<ShareHolderGroup>,
@@ -82,8 +97,8 @@ pub struct ManifestV2 {
 	pub namespace: Namespace,
 	/// Pivot binary configuration and verifiable values.
 	pub pivot: PivotConfigV2,
-	/// Manifest Set members and threshold.
-	pub manifest_set: ManifestSet,
+	/// Manifest Set members, by key digest, and threshold.
+	pub manifest_set: ManifestSetV2,
 	/// Share Set: a tree of threshold groups over the quorum key shares.
 	pub share_set: ShareSetV2,
 	/// Configuration and verifiable values for the enclave hardware.
@@ -91,14 +106,11 @@ pub struct ManifestV2 {
 	/// DNS resolver configuration for the enclave.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub dns: Option<DnsConfig>,
-	/// Hybrid public key whose signed order makes one boot mint this
-	/// manifest's app key. Absent, the manifest has no app key.
-	#[serde(
-		default,
-		skip_serializing_if = "Option::is_none",
-		with = "qos_hex::serde::option"
-	)]
-	pub app_key_minter: Option<Vec<u8>>,
+	/// The digests of the hybrid key whose signed order makes one boot mint
+	/// this manifest's app key; the order carries the full key. Absent, the
+	/// manifest has no app key.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub app_key_minter: Option<KeyDigests>,
 	/// Boot without a quorum key: the enclave starts the pivot once the
 	/// manifest set has approved, with no shares and no key forward. The
 	/// namespace then names no quorum key and the share set is empty. Absent,

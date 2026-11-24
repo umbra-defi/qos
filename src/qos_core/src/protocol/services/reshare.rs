@@ -104,11 +104,10 @@ pub(in crate::protocol) fn reshare_quorum_key(
 		})?;
 	}
 
-	let manifest_set = manifest.manifest_set();
+	let manifest_set = manifest.manifest_set()?;
 	let manifest_approvers: BTreeSet<_> = approvals
 		.iter()
-		.filter(|approval| manifest_set.members.contains(&approval.member))
-		.map(|approval| approval.member.pub_key.clone())
+		.filter_map(|approval| manifest_set.locate(&approval.member))
 		.collect();
 	if manifest_approvers.len() < manifest_set.threshold as usize {
 		return Err(not_approved(

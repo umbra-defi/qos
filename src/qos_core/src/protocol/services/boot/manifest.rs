@@ -1,6 +1,6 @@
 //! Versioned manifest helpers.
 
-use std::io::Error;
+use std::{borrow::Cow, io::Error};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -9,15 +9,17 @@ use crate::protocol::{Hash256, ProtocolError, QosHash};
 use std::net::IpAddr;
 
 use super::{
-	Approval, BridgeConfig, Manifest, ManifestEnvelope, ManifestEnvelopeV0,
-	ManifestSet, ManifestV0, Namespace, NitroConfig, RestartPolicy,
+	Approval, BridgeConfig, KeyDigests, Manifest, ManifestEnvelope,
+	ManifestEnvelopeV0, ManifestV0, Namespace, NitroConfig, RestartPolicy,
 };
 
 mod builder;
 pub mod v2;
 
 pub use builder::{ManifestBuilder, ManifestBuilderError};
-pub use v2::{DnsConfig, ManifestEnvelopeV2, ManifestV2, ShareSetV2};
+pub use v2::{
+	DnsConfig, ManifestEnvelopeV2, ManifestSetV2, ManifestV2, ShareSetV2,
+};
 
 /// Schema version used by versioned manifest tooling.
 #[derive(
@@ -146,13 +148,25 @@ impl VersionedManifest {
 		}
 	}
 
-	/// Return the manifest set authorized to approve manifest changes.
-	#[must_use]
-	pub fn manifest_set(&self) -> &ManifestSet {
+	/// Return the manifest set authorized to approve manifest changes, its
+	/// members named by key digest; a v0 or v1 manifest's full keys are
+	/// digested.
+	///
+	/// # Errors
+	///
+	/// A [`ProtocolError::HybridError`] when a v0 or v1 member's key is not a
+	/// hybrid key.
+	pub fn manifest_set(
+		&self,
+	) -> Result<Cow<'_, ManifestSetV2>, ProtocolError> {
 		match self {
-			Self::V2(manifest) => &manifest.manifest_set,
-			Self::V1(manifest) => &manifest.manifest_set,
-			Self::V0(manifest) => &manifest.manifest_set,
+			Self::V2(manifest) => Ok(Cow::Borrowed(&manifest.manifest_set)),
+			Self::V1(manifest) => {
+				Ok(Cow::Owned((&manifest.manifest_set).try_into()?))
+			}
+			Self::V0(manifest) => {
+				Ok(Cow::Owned((&manifest.manifest_set).try_into()?))
+			}
 		}
 	}
 
@@ -180,9 +194,9 @@ impl VersionedManifest {
 	/// minted, or `None` when the manifest has no app key. Only v2 manifests
 	/// can name one.
 	#[must_use]
-	pub fn app_key_minter(&self) -> Option<&[u8]> {
+	pub fn app_key_minter(&self) -> Option<&KeyDigests> {
 		match self {
-			Self::V2(manifest) => manifest.app_key_minter.as_deref(),
+			Self::V2(manifest) => manifest.app_key_minter.as_ref(),
 			Self::V1(_) | Self::V0(_) => None,
 		}
 	}
@@ -425,13 +439,24 @@ impl VersionedManifestEnvelope {
 		}
 	}
 
-	/// Return the embedded manifest set.
-	#[must_use]
-	pub fn manifest_set(&self) -> &ManifestSet {
+	/// Return the embedded manifest set, its members named by key digest.
+	///
+	/// # Errors
+	///
+	/// As [`VersionedManifest::manifest_set`].
+	pub fn manifest_set(
+		&self,
+	) -> Result<Cow<'_, ManifestSetV2>, ProtocolError> {
 		match self {
-			Self::V2(envelope) => &envelope.manifest.manifest_set,
-			Self::V1(envelope) => &envelope.manifest.manifest_set,
-			Self::V0(envelope) => &envelope.manifest.manifest_set,
+			Self::V2(envelope) => {
+				Ok(Cow::Borrowed(&envelope.manifest.manifest_set))
+			}
+			Self::V1(envelope) => {
+				Ok(Cow::Owned((&envelope.manifest.manifest_set).try_into()?))
+			}
+			Self::V0(envelope) => {
+				Ok(Cow::Owned((&envelope.manifest.manifest_set).try_into()?))
+			}
 		}
 	}
 
@@ -477,9 +502,9 @@ impl VersionedManifestEnvelope {
 	/// Return the embedded manifest's app key minter, or `None` when it has
 	/// no app key. Only v2 manifests can name one.
 	#[must_use]
-	pub fn app_key_minter(&self) -> Option<&[u8]> {
+	pub fn app_key_minter(&self) -> Option<&KeyDigests> {
 		match self {
-			Self::V2(e) => e.manifest.app_key_minter.as_deref(),
+			Self::V2(e) => e.manifest.app_key_minter.as_ref(),
 			Self::V1(_) | Self::V0(_) => None,
 		}
 	}
@@ -502,7 +527,8 @@ impl VersionedManifestEnvelope {
 	/// Returns a [`ProtocolError`] when signatures are invalid, members are
 	/// unauthorized, duplicate approvals exist, or the threshold is not met.
 	pub fn check_approvals(&self) -> Result<(), ProtocolError> {
-		super::ensure_unique_members(&self.manifest_set().members)?;
+		let manifest_set = self.manifest_set()?;
+		manifest_set.validate()?;
 
 		let manifest_hash = self.manifest_hash();
 		let mut uniq_members = std::collections::HashSet::new();
@@ -518,18 +544,23 @@ impl VersionedManifestEnvelope {
 					approval.clone(),
 				));
 			}
-			if !self.manifest_set().members.contains(&approval.member) {
+			// The member is named by its key's digests, unique across the set,
+			// so its index counts it once.
+			let Some(index) = manifest_set.locate(&approval.member) else {
 				return Err(ProtocolError::NotManifestSetMember);
-			}
-			// Ensure that the member only has 1 approval. We already checked
-			// at the top of this function that each member has a unique
-			// signing key, so hashing the full member record is sufficient.
-			if !uniq_members.insert(approval.member.qos_hash()) {
+			};
+			if !uniq_members.insert(index) {
 				return Err(ProtocolError::DuplicateApproval);
 			}
 		}
+		let approvers: Vec<_> = self
+			.manifest_set_approvals()
+			.iter()
+			.map(|approval| approval.member.clone())
+			.collect();
+		super::ensure_unique_members(&approvers)?;
 
-		if uniq_members.len() < self.manifest_set().threshold as usize {
+		if uniq_members.len() < manifest_set.threshold as usize {
 			return Err(ProtocolError::NotEnoughApprovals);
 		}
 
@@ -587,8 +618,8 @@ mod tests {
 	use crate::protocol::{
 		QosHash,
 		services::boot::{
-			MemberPubKey, PatchSet, PivotConfig, PivotConfigV0, PivotEnv,
-			QuorumMember, ShareSet,
+			ManifestSet, MemberPubKey, PatchSet, PivotConfig, PivotConfigV0,
+			PivotEnv, QuorumMember, ShareSet,
 		},
 	};
 
@@ -615,10 +646,12 @@ mod tests {
 				args: vec!["--foo".to_string()],
 				env: PivotEnv::new(),
 			},
-			manifest_set: ManifestSet {
+			manifest_set: (&ManifestSet {
 				threshold: 1,
 				members: vec![member.clone()],
-			},
+			})
+				.try_into()
+				.unwrap(),
 			share_set: ShareSet { threshold: 1, members: vec![member] }
 				.try_into()
 				.unwrap(),
@@ -780,7 +813,11 @@ mod tests {
 			&serde_json::to_vec(&v1).unwrap(),
 		)
 		.unwrap_err();
-		assert!(error.to_string().contains("patchSet"), "{error}");
+		assert!(
+			error.to_string().contains("patchSet")
+				|| error.to_string().contains("pubKey"),
+			"a v1 manifest declared v2 must fail as v2, on a v1-only field: {error}"
+		);
 
 		let mut v0 =
 			serde_json::to_value(sample_v0_manifest(member.clone())).unwrap();
@@ -926,10 +963,12 @@ mod tests {
 		};
 
 		let mut manifest = sample_v2_manifest(alias_a.clone());
-		manifest.manifest_set = ManifestSet {
+		manifest.manifest_set = (&ManifestSet {
 			threshold: 2,
 			members: vec![alias_a.clone(), alias_b.clone()],
-		};
+		})
+			.try_into()
+			.unwrap();
 
 		let manifest_hash = canonical_json_hash(&manifest);
 		let signature = pair.sign(&manifest_hash).unwrap();

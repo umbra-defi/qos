@@ -144,11 +144,15 @@ pub(in crate::protocol) fn settle_quorum_key(
 pub(in crate::protocol) fn mint_app_key(
 	state: &mut ProtocolState,
 	order_signature: &[u8],
+	minter_public_key: &[u8],
 ) -> Result<(), ProtocolError> {
 	let manifest = state.handles.get_manifest_envelope()?.manifest();
 	let minter =
 		manifest.app_key_minter().ok_or(ProtocolError::AppKeyMinterNotNamed)?;
-	let minter = HybridPublic::from_bytes(minter)
+	if !minter.names(minter_public_key) {
+		return Err(ProtocolError::AppKeyMintOrderInvalid);
+	}
+	let minter = HybridPublic::from_bytes(minter_public_key)
 		.map_err(|_| ProtocolError::InvalidAppKeyMinter)?;
 	let setup_binding =
 		state.handles.get_ephemeral_key()?.public_key().attestation_binding();
@@ -354,7 +358,7 @@ mod test {
 			services::{
 				app_key::{export_app_key, inject_app_key, mint_app_key},
 				boot::{
-					Approval, NitroConfig, PivotEnv,
+					Approval, KeyDigests, NitroConfig, PivotEnv,
 					manifest::{
 						ManifestVersion, VersionedManifestEnvelope,
 						v2::{
@@ -392,11 +396,12 @@ mod test {
 				args: v1.pivot.args.clone(),
 				env: PivotEnv::default(),
 			},
-			manifest_set: v1.manifest_set.clone(),
+			manifest_set: (&v1.manifest_set).try_into().unwrap(),
 			share_set: v1.share_set.clone().try_into().unwrap(),
 			enclave: v1.enclave.clone(),
 			dns: None,
-			app_key_minter: minter.map(|m| m.public_key().to_bytes()),
+			app_key_minter: minter
+				.map(|m| KeyDigests::of(&m.public_key().to_bytes()).unwrap()),
 			no_quorum_key: false,
 		};
 		approved(args, manifest)
@@ -587,7 +592,11 @@ mod test {
 		assert!(receiver.state.handles.quorum_key_exists());
 		assert!(receiver.state.handles.get_app_key().is_err());
 		assert_eq!(
-			mint_app_key(&mut receiver.state, &[0; qos_hybrid::SIGNATURE_LEN]),
+			mint_app_key(
+				&mut receiver.state,
+				&[0; qos_hybrid::SIGNATURE_LEN],
+				&[]
+			),
 			Err(ProtocolError::AppKeyMinterNotNamed)
 		);
 	}
@@ -639,6 +648,7 @@ mod test {
 		mint_app_key(
 			&mut receiver.state,
 			&sign_order(&minter, &envelope, &args.eph_pair),
+			&minter.public_key().to_bytes(),
 		)
 		.unwrap();
 
@@ -674,16 +684,31 @@ mod test {
 			),
 		] {
 			assert_eq!(
-				mint_app_key(&mut receiver.state, &order),
+				mint_app_key(
+					&mut receiver.state,
+					&order,
+					&minter.public_key().to_bytes()
+				),
 				Err(ProtocolError::AppKeyMintOrderInvalid),
 				"only the minter's order for this manifest and this boot mints"
 			);
 		}
+		let impostor = HybridPair::generate().unwrap();
+		assert_eq!(
+			mint_app_key(
+				&mut receiver.state,
+				&sign_order(&impostor, &envelope, &args.eph_pair),
+				&impostor.public_key().to_bytes()
+			),
+			Err(ProtocolError::AppKeyMintOrderInvalid),
+			"a key that does not digest to the manifest's minter cannot order"
+		);
 		assert!(receiver.state.handles.get_app_key().is_err());
 
 		mint_app_key(
 			&mut receiver.state,
 			&sign_order(&minter, &envelope, &args.eph_pair),
+			&minter.public_key().to_bytes(),
 		)
 		.expect("a refused order leaves the boot waiting for a valid one");
 	}
@@ -876,7 +901,10 @@ mod test {
 		);
 		assert_eq!(
 			receiver.state.handle_msg_response(
-				&ProtocolMsg::MintAppKeyRequest { order_signature: forged }
+				&ProtocolMsg::MintAppKeyRequest {
+					order_signature: forged,
+					minter_public_key: minter.public_key().to_bytes(),
+				}
 			),
 			ProtocolMsg::ProtocolErrorResponse(
 				ProtocolError::AppKeyMintOrderInvalid
@@ -896,6 +924,7 @@ mod test {
 						&envelope,
 						&args.eph_pair
 					),
+					minter_public_key: minter.public_key().to_bytes(),
 				}
 			),
 			ProtocolMsg::MintAppKeyResponse
@@ -1024,6 +1053,7 @@ mod test {
 		assert_eq!(
 			booted.state.handle_msg_response(&ProtocolMsg::MintAppKeyRequest {
 				order_signature: sign_order(&minter, &envelope, &setup_pair),
+				minter_public_key: minter.public_key().to_bytes(),
 			}),
 			ProtocolMsg::MintAppKeyResponse
 		);

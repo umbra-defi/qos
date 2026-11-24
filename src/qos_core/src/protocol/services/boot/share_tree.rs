@@ -7,8 +7,8 @@
 //!
 //! Two forms of the tree exist. Genesis and reshare take a [`GenesisSet`]-shaped tree of
 //! [`ShareGroup`]s whose members carry their full hybrid keys, because each holder's shard is
-//! sealed to its key. A manifest names only [`ShareHolder`]s: an alias and the two digests of the
-//! key, as [`holder_digests`] computes them, so it commits to who holds a shard without carrying
+//! sealed to its key. A manifest names only [`MemberDigest`]s: an alias and the two digests of the
+//! key, as [`member_digests`] computes them, so it commits to who holds a shard without carrying
 //! 4224 bytes per member. Whoever posts a shard presents the full key, and its digests must match
 //! a holder of the tree.
 //!
@@ -23,7 +23,8 @@ use sha3::{Digest, Sha3_384};
 use crate::protocol::{
 	ProtocolError,
 	services::boot::{
-		QuorumMember, ShareSet, ShareSetV2, ensure_unique_members,
+		ManifestSet, ManifestSetV2, QuorumMember, ShareSet, ShareSetV2,
+		ensure_unique_members,
 	},
 };
 
@@ -61,16 +62,51 @@ pub struct ShareGroup {
 	pub groups: Vec<ShareGroup>,
 }
 
-/// A holder as a manifest names it: an alias and the digests of its two key halves.
+/// A key as a manifest names it: the digests of its two halves, as [`member_digests`] computes
+/// them. The app key minter is named this way.
 #[derive(PartialEq, Eq, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ShareHolder {
-	/// Human readable name. Not cryptographically bound to anything.
-	pub alias: String,
-	/// [`holder_digests`]' receiving key digest, 48 bytes.
+pub struct KeyDigests {
+	/// The receiving key digest, 48 bytes.
 	#[serde(with = "qos_hex::serde")]
 	pub receiving_key_digest: Vec<u8>,
-	/// [`holder_digests`]' signing key digest, 48 bytes.
+	/// The signing key digest, 48 bytes.
+	#[serde(with = "qos_hex::serde")]
+	pub signing_key_digest: Vec<u8>,
+}
+
+impl KeyDigests {
+	/// The digests of `public_key`.
+	///
+	/// # Errors
+	///
+	/// As [`member_digests`].
+	pub fn of(public_key: &[u8]) -> Result<Self, ProtocolError> {
+		let (receiving, signing) = member_digests(public_key)?;
+		Ok(Self {
+			receiving_key_digest: receiving.to_vec(),
+			signing_key_digest: signing.to_vec(),
+		})
+	}
+
+	/// Whether `public_key` is a hybrid key whose digests these are.
+	#[must_use]
+	pub fn names(&self, public_key: &[u8]) -> bool {
+		Self::of(public_key).is_ok_and(|digests| digests == *self)
+	}
+}
+
+/// A member as a manifest names it, in its manifest set or as a holder of its share set: an alias
+/// and the digests of its two key halves.
+#[derive(PartialEq, Eq, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemberDigest {
+	/// Human readable name. Not cryptographically bound to anything.
+	pub alias: String,
+	/// [`member_digests`]' receiving key digest, 48 bytes.
+	#[serde(with = "qos_hex::serde")]
+	pub receiving_key_digest: Vec<u8>,
+	/// [`member_digests`]' signing key digest, 48 bytes.
 	#[serde(with = "qos_hex::serde")]
 	pub signing_key_digest: Vec<u8>,
 }
@@ -86,7 +122,7 @@ pub struct ShareHolderGroup {
 	pub threshold: u32,
 	/// Members holding a shard of this group's secret.
 	#[serde(default)]
-	pub members: Vec<ShareHolder>,
+	pub members: Vec<MemberDigest>,
 	/// Subgroups, each holding one share of this group's secret.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub groups: Vec<ShareHolderGroup>,
@@ -99,7 +135,7 @@ pub struct ShareHolderGroup {
 /// # Errors
 ///
 /// Returns a [`ProtocolError::HybridError`] when `public_key` is not a hybrid public key.
-pub fn holder_digests(
+pub fn member_digests(
 	public_key: &[u8],
 ) -> Result<([u8; DIGEST_BYTES], [u8; DIGEST_BYTES]), ProtocolError> {
 	let bytes = HybridPublic::from_bytes(public_key)?.to_bytes();
@@ -119,20 +155,30 @@ fn framed_digest(domain: &[u8], data: &[u8]) -> [u8; DIGEST_BYTES] {
 	hasher.finalize().into()
 }
 
-impl ShareHolder {
+impl MemberDigest {
 	/// The holder a member's key makes.
 	///
 	/// # Errors
 	///
-	/// As [`holder_digests`].
+	/// As [`member_digests`].
 	pub fn from_member(member: &QuorumMember) -> Result<Self, ProtocolError> {
 		let (receiving_key_digest, signing_key_digest) =
-			holder_digests(&member.pub_key)?;
+			member_digests(&member.pub_key)?;
 		Ok(Self {
 			alias: member.alias.clone(),
 			receiving_key_digest: receiving_key_digest.to_vec(),
 			signing_key_digest: signing_key_digest.to_vec(),
 		})
+	}
+
+	/// Whether `member`'s key digests to this member's digests; the alias is not compared.
+	#[must_use]
+	pub fn names(&self, member: &QuorumMember) -> bool {
+		KeyDigests {
+			receiving_key_digest: self.receiving_key_digest.clone(),
+			signing_key_digest: self.signing_key_digest.clone(),
+		}
+		.names(&member.pub_key)
 	}
 
 	fn holder(&self) -> Result<Holder, ProtocolError> {
@@ -174,14 +220,14 @@ pub trait ShareNode {
 	///
 	/// # Errors
 	///
-	/// As [`holder_digests`], for a member whose key is not a hybrid key.
+	/// As [`member_digests`], for a member whose key is not a hybrid key.
 	fn holder_set(&self) -> Result<ShareSetV2, ProtocolError> {
 		Ok(ShareSetV2 {
 			threshold: self.threshold(),
 			members: self
 				.members()
 				.iter()
-				.map(ShareHolder::from_member)
+				.map(MemberDigest::from_member)
 				.collect::<Result<_, _>>()?,
 			groups: self
 				.groups()
@@ -214,7 +260,7 @@ impl ShareGroup {
 			members: self
 				.members
 				.iter()
-				.map(ShareHolder::from_member)
+				.map(MemberDigest::from_member)
 				.collect::<Result<_, _>>()?,
 			groups: self
 				.groups
@@ -242,7 +288,7 @@ pub trait ShareHolderNode {
 	/// Children that must be satisfied to recover this node's secret.
 	fn threshold(&self) -> u32;
 	/// Members, which come before the groups.
-	fn members(&self) -> &[ShareHolder];
+	fn members(&self) -> &[MemberDigest];
 	/// Subgroups.
 	fn groups(&self) -> &[ShareHolderGroup];
 
@@ -274,12 +320,12 @@ pub trait ShareHolderNode {
 	///
 	/// # Errors
 	///
-	/// As [`Self::tree`] and [`holder_digests`].
+	/// As [`Self::tree`] and [`member_digests`].
 	fn locate(
 		&self,
 		member: &QuorumMember,
 	) -> Result<Option<Path>, ProtocolError> {
-		let wanted = ShareHolder::from_member(member)?.holder()?;
+		let wanted = MemberDigest::from_member(member)?.holder()?;
 		Ok(self
 			.tree()?
 			.holders()
@@ -325,7 +371,7 @@ impl ShareHolderNode for ShareHolderGroup {
 	fn threshold(&self) -> u32 {
 		self.threshold
 	}
-	fn members(&self) -> &[ShareHolder] {
+	fn members(&self) -> &[MemberDigest] {
 		&self.members
 	}
 	fn groups(&self) -> &[ShareHolderGroup] {
@@ -337,7 +383,7 @@ impl ShareHolderNode for ShareSetV2 {
 	fn threshold(&self) -> u32 {
 		self.threshold
 	}
-	fn members(&self) -> &[ShareHolder] {
+	fn members(&self) -> &[MemberDigest] {
 		&self.members
 	}
 	fn groups(&self) -> &[ShareHolderGroup] {
@@ -355,11 +401,66 @@ impl TryFrom<ShareSet> for ShareSetV2 {
 			members: flat
 				.members
 				.iter()
-				.map(ShareHolder::from_member)
+				.map(MemberDigest::from_member)
 				.collect::<Result<_, _>>()?,
 			groups: vec![],
 			envelope_digest: None,
 		})
+	}
+}
+
+impl TryFrom<&ManifestSet> for ManifestSetV2 {
+	type Error = ProtocolError;
+
+	/// A full-key manifest set's members named by digest.
+	fn try_from(set: &ManifestSet) -> Result<Self, ProtocolError> {
+		Ok(Self {
+			threshold: set.threshold,
+			members: set
+				.members
+				.iter()
+				.map(MemberDigest::from_member)
+				.collect::<Result<_, _>>()?,
+		})
+	}
+}
+
+impl ManifestSetV2 {
+	/// The index of the member `member`'s key digests to, or `None`.
+	#[must_use]
+	pub fn locate(&self, member: &QuorumMember) -> Option<usize> {
+		self.members.iter().position(|digest| digest.names(member))
+	}
+
+	/// Checks no two members share an alias or a key digest, so one key cannot count twice.
+	///
+	/// # Errors
+	///
+	/// [`ProtocolError::DuplicateQuorumMember`] for a repeated alias or digest.
+	pub fn validate(&self) -> Result<(), ProtocolError> {
+		let mut aliases = HashSet::new();
+		let mut digests = HashSet::new();
+		for member in &self.members {
+			if !aliases.insert(&member.alias)
+				|| !digests.insert(&member.receiving_key_digest)
+				|| !digests.insert(&member.signing_key_digest)
+			{
+				return Err(ProtocolError::DuplicateQuorumMember);
+			}
+		}
+		Ok(())
+	}
+
+	/// The set with its members sorted by digest: two manifests name the same set exactly when
+	/// these are equal.
+	#[must_use]
+	pub fn normalised(&self) -> Self {
+		let mut members = self.members.clone();
+		members.sort_by(|left, right| {
+			(&left.signing_key_digest, &left.receiving_key_digest)
+				.cmp(&(&right.signing_key_digest, &right.receiving_key_digest))
+		});
+		Self { threshold: self.threshold, members }
 	}
 }
 
@@ -442,9 +543,9 @@ mod test {
 	#[test]
 	fn the_two_digests_cover_different_halves() {
 		let key = HybridPair::generate().unwrap().public_key().to_bytes();
-		let (receiving, signing) = holder_digests(&key).unwrap();
+		let (receiving, signing) = member_digests(&key).unwrap();
 		assert_ne!(receiving, signing);
-		assert!(holder_digests(&key[1..]).is_err());
+		assert!(member_digests(&key[1..]).is_err());
 	}
 
 	#[test]

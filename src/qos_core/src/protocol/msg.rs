@@ -329,6 +329,10 @@ pub enum ProtocolMsg {
 		/// and the receiving enclave's setup Ephemeral Key.
 		#[serde(with = "qos_hex::serde")]
 		order_signature: Vec<u8>,
+		/// The minter's full hybrid public key, which must digest to the
+		/// manifest's `appKeyMinter`.
+		#[serde(with = "qos_hex::serde")]
+		minter_public_key: Vec<u8>,
 	},
 	/// Successful response to [`Self::MintAppKeyRequest`].
 	MintAppKeyResponse,
@@ -619,8 +623,9 @@ mod test {
 	use super::*;
 	use crate::protocol::services::boot::{
 		Manifest, ManifestEnvelope, ManifestEnvelopeV2, ManifestSet,
-		ManifestV2, ManifestVersion, Namespace, NitroConfig, PatchSet,
-		PivotConfig, PivotConfigV2, PivotEnv, RestartPolicy, ShareSet,
+		ManifestSetV2, ManifestV2, ManifestVersion, Namespace, NitroConfig,
+		PatchSet, PivotConfig, PivotConfigV2, PivotEnv, RestartPolicy,
+		ShareSet,
 	};
 
 	fn sample_genesis_output() -> GenesisOutput {
@@ -734,7 +739,7 @@ mod test {
 				args: vec![],
 				env: PivotEnv::new(),
 			},
-			manifest_set: ManifestSet { threshold: 1, members: vec![] },
+			manifest_set: ManifestSetV2 { threshold: 1, members: vec![] },
 			share_set: ShareSet { threshold: 1, members: vec![] }
 				.try_into()
 				.unwrap(),
@@ -787,7 +792,7 @@ mod test {
 					args: vec![],
 					env: PivotEnv::new(),
 				},
-				manifest_set: ManifestSet { threshold: 1, members: vec![] },
+				manifest_set: ManifestSetV2 { threshold: 1, members: vec![] },
 				share_set: ShareSet { threshold: 1, members: vec![] }
 					.try_into()
 					.unwrap(),
