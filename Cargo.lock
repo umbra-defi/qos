@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "integration"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "axum",
  "borsh",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "qos_bridge"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "qos_host",
  "tokio",
@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "qos_host"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "axum",
  "serde",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "qos_test_harness"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "serde_json",
  "signed_echo",
@@ -2698,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "signed_echo"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "axum",
  "serde",
@@ -3038,7 +3038,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "umbra_qos_attestation"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",
@@ -3056,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_client"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "argon2",
  "aws-nitro-enclaves-nsm-api",
@@ -3081,7 +3081,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "aws-nitro-enclaves-nsm-api",
  "borsh",
@@ -3109,7 +3109,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_crypto"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "rand 0.9.4",
  "sha2",
@@ -3121,14 +3121,14 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_hex"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "umbra_qos_hybrid"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "aes-gcm",
  "borsh",
@@ -3147,7 +3147,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_json"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3157,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_net"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "borsh",
  "chunked_transfer",
@@ -3175,7 +3175,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_nsm"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",
@@ -3193,7 +3193,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_test_primitives"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "nix 0.30.1",
 ]
