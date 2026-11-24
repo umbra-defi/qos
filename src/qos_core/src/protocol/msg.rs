@@ -587,7 +587,7 @@ mod test {
 
 	fn sample_genesis_output() -> GenesisOutput {
 		GenesisOutput {
-			set: GenesisSet { members: vec![], threshold: 2 },
+			set: GenesisSet { members: vec![], threshold: 2, groups: vec![] },
 			dr_key: None,
 			quorum_key: vec![3, 2, 1],
 			member_outputs: vec![],
@@ -603,7 +603,7 @@ mod test {
 	#[test]
 	fn genesis_messages_are_json_wire_only() {
 		let request = ProtocolMsg::BootGenesisRequest {
-			set: GenesisSet { members: vec![], threshold: 2 },
+			set: GenesisSet { members: vec![], threshold: 2, groups: vec![] },
 			dr_key: None,
 		};
 		let response = ProtocolMsg::BootGenesisResponse {
@@ -696,7 +696,7 @@ mod test {
 				env: PivotEnv::new(),
 			},
 			manifest_set: ManifestSet { threshold: 1, members: vec![] },
-			share_set: ShareSet { threshold: 1, members: vec![] },
+			share_set: ShareSet { threshold: 1, members: vec![] }.into(),
 			enclave: NitroConfig {
 				pcr0: vec![0; 48],
 				pcr1: vec![1; 48],
@@ -747,7 +747,7 @@ mod test {
 					env: PivotEnv::new(),
 				},
 				manifest_set: ManifestSet { threshold: 1, members: vec![] },
-				share_set: ShareSet { threshold: 1, members: vec![] },
+				share_set: ShareSet { threshold: 1, members: vec![] }.into(),
 				enclave: NitroConfig {
 					pcr0: vec![0; 48],
 					pcr1: vec![1; 48],

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/umbra-defi/qos/compare/v0.17.0...v0.18.0) - 2026-11-24
+
+### Breaking
+- `VersionedManifest::share_set` and `VersionedManifestEnvelope::share_set` return a
+  `Cow<ShareSetV2>`; a v0 or v1 manifest's flat set comes back with no groups.
+- `GenesisSet` gains `groups`, which changes its borsh encoding and so the hash a genesis
+  attestation commits to, even for a flat set: `qos_client` and the enclave must both be 0.18.0.
+- `provision` refuses a second share from one member (`ShareAlreadyProvisioned`) and a share whose
+  identifier is not its member's position (`ShareNotForMember`), and validates the share set first
+  (`InvalidShareTree`).
+
+### Added
+- Share trees: a v2 share set and a genesis set can hold nested `groups`, each with its own
+  threshold, members and groups, so a quorum key can need, say, a threshold of Umbra's members
+  and a threshold of an external team's. The root threshold counts members and satisfied groups
+  alike; at most 4 levels and 255 children per node; threshold 1 lets any one child recover. A
+  set without groups serializes, hashes and splits exactly as before.
+- `qos_crypto::share_tree`: split and recover a secret over a share tree.
+- `qos_client` reads share trees from a flat share set directory: `<group>.quorum_threshold`
+  declares a group, `<group>.<subgroup>.quorum_threshold` a group inside it, `<group>.<alias>.pub`
+  a member. Approving a manifest checks its share tree is valid.
+
 ## [0.17.0](https://github.com/umbra-defi/qos/compare/qos_core-v0.16.2...v0.17.0) - 2026-11-19
 
 The first release of the umbra-defi/qos fork, from tkhq/qos 0.16.2. Every crate is published as

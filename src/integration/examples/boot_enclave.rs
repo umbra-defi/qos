@@ -132,7 +132,7 @@ async fn main() {
 	let manifest_set = ManifestSet { threshold: 2, members: members.clone() };
 	assert_eq!(*manifest.manifest_set(), manifest_set);
 	let share_set = ShareSet { threshold: 2, members };
-	assert_eq!(*manifest.share_set(), share_set);
+	assert_eq!(*manifest.share_set(), share_set.into());
 
 	// -- CLIENT make sure each user can run `approve-manifest`
 	for alias in [user1, user2, user3] {

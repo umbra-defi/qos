@@ -8,7 +8,8 @@ use qos_nsm::types::{NsmRequest, NsmResponse};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
-	ProtocolError, ProtocolState, QosHash, services::boot::QuorumMember,
+	ProtocolError, ProtocolState, QosHash,
+	services::boot::{QuorumMember, ShareGroup, ShareNode},
 };
 
 const QOS_TEST_MESSAGE: &[u8] = b"qos-test-message";
@@ -31,6 +32,22 @@ pub struct GenesisSet {
 	/// Threshold for successful reconstitution of the Quorum Key shards
 	#[serde(with = "qos_json::string_or_numeric")]
 	pub threshold: u32,
+	/// Groups that each recover one share of the Quorum Key, after
+	/// [`Self::members`]; the threshold counts them alongside the members.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub groups: Vec<ShareGroup>,
+}
+
+impl ShareNode for GenesisSet {
+	fn threshold(&self) -> u32 {
+		self.threshold
+	}
+	fn members(&self) -> &[QuorumMember] {
+		&self.members
+	}
+	fn groups(&self) -> &[ShareGroup] {
+		&self.groups
+	}
 }
 
 #[derive(
@@ -178,19 +195,18 @@ pub(in crate::protocol) fn boot_genesis(
 	genesis_set: &GenesisSet,
 	maybe_dr_key: Option<Vec<u8>>,
 ) -> Result<(GenesisOutput, NsmResponse), ProtocolError> {
-	super::boot::ensure_unique_members(&genesis_set.members)?;
+	genesis_set.validate()?;
 
 	let quorum_pair = HybridPair::generate()?;
 	let master_seed = &quorum_pair.to_master_seed()[..];
 
-	let shares = qos_crypto::shamir::shares_generate(
+	let shares = qos_crypto::share_tree::tree_shares_generate(
 		master_seed,
-		genesis_set.members.len(),
-		genesis_set.threshold as usize,
+		&genesis_set.shape(),
 	)
 	.map_err(|e| ProtocolError::QosCrypto(format!("{e:?}")))?;
 
-	let member_outputs: Result<Vec<_>, _> = zip(shares, genesis_set.members.iter().cloned())
+	let member_outputs: Result<Vec<_>, _> = zip(shares, genesis_set.leaves().into_iter().cloned())
 		.map(|(share, share_set_member)| -> Result<GenesisMemberOutput, ProtocolError> {
 			// 1) encrypt the share to quorum key
 			let personal_pub = HybridPublic::from_bytes(&share_set_member.pub_key)?;
@@ -250,6 +266,98 @@ mod test {
 	use crate::handles::Handles;
 
 	#[test]
+	fn boot_genesis_splits_over_a_share_tree() {
+		let handles = Handles::new(
+			"EPH.tree".to_string(),
+			"QUO.tree".to_string(),
+			"QUO.tree.app".to_string(),
+			"MAN.tree".to_string(),
+			"PIV.tree".to_string(),
+		);
+		let mut protocol_state =
+			ProtocolState::new(Box::new(MockNsm::new()), handles, None);
+		let pairs: Vec<_> =
+			(0..5).map(|_| HybridPair::generate().unwrap()).collect();
+		let member = |index: usize| QuorumMember {
+			alias: format!("member{index}"),
+			pub_key: pairs[index].public_key().to_bytes(),
+		};
+		let group =
+			|alias: &str, threshold, members: Vec<QuorumMember>| ShareGroup {
+				alias: alias.to_string(),
+				threshold,
+				members,
+				groups: vec![],
+			};
+		let genesis_set = GenesisSet {
+			members: vec![],
+			threshold: 2,
+			groups: vec![
+				group("umbra", 2, vec![member(0), member(1), member(2)]),
+				group("external", 1, vec![member(3), member(4)]),
+			],
+		};
+
+		let (output, _nsm_response) =
+			boot_genesis(&mut protocol_state, &genesis_set, None).unwrap();
+		assert_eq!(output.set, genesis_set);
+		let shares: Vec<_> = zip(&output.member_outputs, &pairs)
+			.enumerate()
+			.map(|(index, (output, pair))| {
+				assert_eq!(output.share_set_member, member(index));
+				let share =
+					pair.decrypt(&output.encrypted_quorum_key_share).unwrap();
+				assert_eq!(sha_512(&share[..]), output.share_hash);
+				share
+			})
+			.collect();
+
+		let tree = genesis_set.shape();
+		let subset: Vec<_> = shares
+			.into_iter()
+			.enumerate()
+			.map(|(leaf, share)| [0, 2, 4].contains(&leaf).then_some(share))
+			.collect();
+		let seed: zeroize::Zeroizing<[u8; MASTER_SEED_LEN]> =
+			zeroize::Zeroizing::new(
+				qos_crypto::share_tree::tree_shares_reconstruct(&tree, &subset)
+					.unwrap()[..]
+					.try_into()
+					.unwrap(),
+			);
+		assert_eq!(
+			HybridPair::from_master_seed(&seed)
+				.unwrap()
+				.public_key()
+				.to_bytes(),
+			output.quorum_key
+		);
+	}
+
+	#[test]
+	fn boot_genesis_refuses_an_invalid_share_tree() {
+		let handles = Handles::new(
+			"EPH.badtree".to_string(),
+			"QUO.badtree".to_string(),
+			"QUO.badtree.app".to_string(),
+			"MAN.badtree".to_string(),
+			"PIV.badtree".to_string(),
+		);
+		let mut protocol_state =
+			ProtocolState::new(Box::new(MockNsm::new()), handles, None);
+		let member = QuorumMember {
+			alias: "only".to_string(),
+			pub_key: HybridPair::generate().unwrap().public_key().to_bytes(),
+		};
+		let genesis_set =
+			GenesisSet { members: vec![member], threshold: 2, groups: vec![] };
+		assert!(matches!(
+			boot_genesis(&mut protocol_state, &genesis_set, None),
+			Err(ProtocolError::InvalidShareTree(_))
+		));
+	}
+
+	#[test]
 	fn boot_genesis_works() {
 		let handles = Handles::new(
 			"EPH".to_string(),
@@ -282,7 +390,8 @@ mod test {
 		let member_pairs = vec![member1_pair, member2_pair, member3_pair];
 
 		let threshold = 2;
-		let genesis_set = GenesisSet { members: genesis_members, threshold };
+		let genesis_set =
+			GenesisSet { members: genesis_members, threshold, groups: vec![] };
 
 		let (output, _nsm_response) =
 			boot_genesis(&mut protocol_state, &genesis_set, None).unwrap();
@@ -361,6 +470,7 @@ mod test {
 				},
 			],
 			threshold: 2,
+			groups: vec![],
 		};
 
 		let err =
@@ -389,7 +499,7 @@ mod test {
 					.to_bytes(),
 			})
 			.collect();
-		let genesis_set = GenesisSet { members, threshold: 2 };
+		let genesis_set = GenesisSet { members, threshold: 2, groups: vec![] };
 		let dr_key = HybridPair::generate().unwrap().public_key().to_bytes();
 
 		let (output, _) = boot_genesis(

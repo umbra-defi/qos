@@ -233,6 +233,13 @@ pub enum ProtocolError {
 	/// A key forward boot was sent a manifest that has no quorum key to
 	/// forward.
 	NoQuorumKeyToForward,
+	/// The share set or genesis set is not a valid share tree.
+	InvalidShareTree(String),
+	/// The member already provisioned a share for this boot.
+	ShareAlreadyProvisioned,
+	/// The share's identifier is not its member's position in the share
+	/// tree, or its length is not a master seed's plus one.
+	ShareNotForMember,
 }
 
 impl From<std::io::Error> for ProtocolError {
@@ -487,6 +494,16 @@ impl std::fmt::Display for ProtocolError {
 			Self::NoQuorumKeyToForward => {
 				write!(f, "the manifest has no quorum key to forward")
 			}
+			Self::InvalidShareTree(reason) => {
+				write!(f, "invalid share tree: {reason}")
+			}
+			Self::ShareAlreadyProvisioned => {
+				write!(f, "the member already provisioned a share")
+			}
+			Self::ShareNotForMember => write!(
+				f,
+				"the share does not belong to the member's position in the share tree"
+			),
 		}
 	}
 }

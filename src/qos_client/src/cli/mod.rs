@@ -381,7 +381,7 @@ impl Command {
 	fn share_set_dir_token() -> Token {
 		Token::new(
 			SHARE_SET_DIR,
-			"Director with public keys for members of the share set.",
+			"Directory with public keys for members of the share set. Share groups are named by path: `<group>.quorum_threshold` declares a group, `<group>.<alias>.pub` a member of it.",
 		)
 		.takes_value(true)
 		.required(true)
@@ -389,7 +389,7 @@ impl Command {
 	fn share_set_dir_optional_token() -> Token {
 		Token::new(
 			SHARE_SET_DIR,
-			"Directory with public keys for members of the share set. Required unless `--no-quorum-key`.",
+			"Directory with public keys for members of the share set. Share groups are named by path: `<group>.quorum_threshold` declares a group, `<group>.<alias>.pub` a member of it. Required unless `--no-quorum-key`.",
 		)
 		.takes_value(true)
 	}

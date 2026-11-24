@@ -131,6 +131,7 @@ fn sample_genesis_set() -> GenesisSet {
 			QuorumMember { alias: "a".to_string(), pub_key: vec![1; 33] },
 			QuorumMember { alias: "b".to_string(), pub_key: vec![2; 33] },
 		],
+		groups: vec![],
 	}
 }
 

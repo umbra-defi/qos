@@ -99,7 +99,12 @@ Node is reachable through `qos_host`.
     at least `manifest.manifest_set.threshold` valid approvals from distinct
     members of the Manifest Set. The Share Set has its own threshold,
     `manifest.share_set.threshold`, which controls quorum key reconstruction
-    during provisioning rather than manifest approval.
+    during provisioning rather than manifest approval. A v2 Share Set may also
+    hold `groups`, making it a share tree: the root threshold counts satisfied
+    children, its members first, then its groups, and each group is satisfied
+    by its own threshold over its own members and groups (at most 4 levels, 255
+    children per node). A Share Set without groups is the flat
+    `threshold`-of-`members` set and keeps its manifest hash.
 
 2) The Node gets a `BootStandardRequest` from the Client.
 
@@ -157,15 +162,16 @@ Node is reachable through `qos_host`.
     manifest.
 
 6) The Node processes each `ProvisionRequest` by performing the following steps in
-   [`provision`](../src/qos_core/src/protocol/services/provision.rs#L58-L124):
+   [`provision`](../src/qos_core/src/protocol/services/provision.rs#L83-L163):
     1) Fetch the local Manifest Envelope written during `BootStandardRequest`.
     1) Verify that the approval signature is valid over the manifest hash.
-    1) Verify that the approver belongs to the manifest's Share Set.
+    1) Check the Share Set is a valid share tree: every threshold within 1 and its node's children, unique group aliases, and no two members sharing an alias or a key component.
+    1) Verify that the approver belongs to the manifest's Share Set, at any depth, and has not already posted a share.
+    1) Decrypt the posted share with the Node's setup Ephemeral Key, and reject it unless it is a master seed plus one byte long and its identifier byte is the approver's position within its group.
     1) Record the Share Set approval in the local Manifest Envelope for auditability.
-    1) Decrypt the posted share with the Node's setup Ephemeral Key.
-    1) Add the decrypted share to the provisioning state. Each recorded Share Set approval corresponds to one posted encrypted share; the Node does not separately accept a batch of Share Set approvals before shares are posted. Note the approvals are primarily for audit trail purposes.
-    1) If fewer than `manifest.share_set.threshold` shares have been posted, return `ProvisionResponse { reconstructed: false }`.
-    1) Once `manifest.share_set.threshold` shares have been posted, reconstruct the Quorum Key with Shamir reconstruction. The true cryptographic reconstruction threshold is determined by how the Shamir shares were originally split. `manifest.share_set.threshold` represents the minimum number of Share Set approvals required before the Node attempts reconstruction, so it should be greater than or equal to the Shamir reconstruction threshold.
+    1) Add the decrypted share to the provisioning state at the approver's leaf. Each recorded Share Set approval corresponds to one posted encrypted share; the Node does not separately accept a batch of Share Set approvals before shares are posted. Note the approvals are primarily for audit trail purposes.
+    1) If the posted shares do not yet satisfy the Share Set, return `ProvisionResponse { reconstructed: false }`.
+    1) Once they do, reconstruct the Quorum Key bottom up, each group from its first threshold satisfied children, with Shamir reconstruction. A failed reconstruction drops the posted shares so members can post again.
     1) Check that the reconstructed Quorum Key public key matches `manifest.namespace.quorum_key`. This is the effective cryptographic check for provisioning: if the posted shares cannot reconstruct the intended key, provisioning fails.
     1) If the manifest names an `appKeyMinter`, keep the Quorum Key in memory, return `ProvisionResponse { reconstructed: true, awaiting_app_key: true }` and wait in `WaitingForAppKey` until the minter's order mints the App Key or an enclave of the manifest forwards it (see [Enclave Keys](enclave_keys.md#app-key)); the steps below run then.
     1) Rotate to the precommitted live Ephemeral Key so app-level uses do not reuse the setup key that protected share provisioning.

@@ -4,11 +4,14 @@ use crate::protocol::{
 	Hash256,
 	services::boot::{
 		BridgeConfig, Manifest, ManifestSet, Namespace, NitroConfig, PatchSet,
-		PivotConfig, PivotConfigV2, PivotEnv, RestartPolicy, ShareSet,
+		PivotConfig, PivotConfigV2, PivotEnv, RestartPolicy, ShareGroup,
+		ShareSet,
 	},
 };
 
-use super::{DnsConfig, ManifestV2, ManifestVersion, VersionedManifest};
+use super::{
+	DnsConfig, ManifestV2, ManifestVersion, ShareSetV2, VersionedManifest,
+};
 
 /// An error returned when a required manifest value was not provided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -46,6 +49,9 @@ pub enum ManifestBuilderError {
 	/// A v1 manifest cannot boot without a quorum key.
 	#[error("manifest v1 does not support booting without a quorum key")]
 	V1DoesNotSupportNoQuorumKey,
+	/// A v1 manifest's share set is flat: it cannot hold share groups.
+	#[error("manifest v1 does not support share groups")]
+	V1DoesNotSupportShareGroups,
 }
 
 /// Builds a versioned manifest using either the v1 or v2 schema.
@@ -66,6 +72,7 @@ pub struct ManifestBuilder {
 	pivot_env: Option<PivotEnv>,
 	manifest_set: Option<ManifestSet>,
 	share_set: Option<ShareSet>,
+	share_groups: Vec<ShareGroup>,
 	enclave: Option<NitroConfig>,
 	patch_set: Option<PatchSet>,
 	dns: Option<DnsConfig>,
@@ -94,6 +101,7 @@ impl ManifestBuilder {
 			pivot_env: None,
 			manifest_set: None,
 			share_set: None,
+			share_groups: Vec::new(),
 			enclave: None,
 			patch_set: None,
 			dns: None,
@@ -184,6 +192,14 @@ impl ManifestBuilder {
 		self
 	}
 
+	/// Add groups to the share set, after its members (v2 only). The share
+	/// set's threshold then counts satisfied groups alongside its members.
+	#[must_use]
+	pub fn share_groups(mut self, share_groups: Vec<ShareGroup>) -> Self {
+		self.share_groups = share_groups;
+		self
+	}
+
 	/// Set the enclave configuration.
 	#[must_use]
 	pub fn enclave(mut self, enclave: NitroConfig) -> Self {
@@ -263,6 +279,11 @@ impl ManifestBuilder {
 						ManifestBuilderError::V1DoesNotSupportNoQuorumKey,
 					);
 				}
+				if !self.share_groups.is_empty() {
+					return Err(
+						ManifestBuilderError::V1DoesNotSupportShareGroups,
+					);
+				}
 				let patch_set = self
 					.patch_set
 					.ok_or(ManifestBuilderError::MissingPatchSet)?;
@@ -299,7 +320,10 @@ impl ManifestBuilder {
 						env: self.pivot_env.unwrap_or_default(),
 					},
 					manifest_set,
-					share_set,
+					share_set: ShareSetV2 {
+						groups: self.share_groups,
+						..share_set.into()
+					},
 					enclave,
 					dns: self.dns,
 					app_key_minter: self.app_key_minter,
