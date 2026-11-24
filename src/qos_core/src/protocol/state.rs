@@ -183,6 +183,15 @@ impl ProtocolRoute {
 		)
 	}
 
+	// A refused envelope leaves the boot waiting for the right one.
+	pub fn provide_quorum_key_envelope(current_phase: ProtocolPhase) -> Self {
+		ProtocolRoute::new(
+			Box::new(handlers::provide_quorum_key_envelope),
+			current_phase,
+			current_phase,
+		)
+	}
+
 	pub fn export_key(current_phase: ProtocolPhase) -> Self {
 		ProtocolRoute::new(
 			Box::new(handlers::export_key),
@@ -391,6 +400,7 @@ impl ProtocolState {
 					ProtocolRoute::live_attestation_doc(self.phase),
 					ProtocolRoute::manifest_envelope(self.phase),
 					// phase specific routes
+					ProtocolRoute::provide_quorum_key_envelope(self.phase),
 					ProtocolRoute::provision(self.phase),
 				]
 			}
@@ -574,6 +584,21 @@ mod handlers {
 				.map_err(ProtocolMsg::ProtocolErrorResponse);
 
 			Some(result)
+		} else {
+			None
+		}
+	}
+
+	pub(super) fn provide_quorum_key_envelope(
+		req: &ProtocolMsg,
+		state: &mut ProtocolState,
+	) -> ProtocolRouteResponse {
+		if let ProtocolMsg::ProvideQuorumKeyEnvelopeRequest { envelope } = req {
+			Some(
+				provision::provide_quorum_key_envelope(envelope, state)
+					.map(|()| ProtocolMsg::ProvideQuorumKeyEnvelopeResponse)
+					.map_err(ProtocolMsg::ProtocolErrorResponse),
+			)
 		} else {
 			None
 		}

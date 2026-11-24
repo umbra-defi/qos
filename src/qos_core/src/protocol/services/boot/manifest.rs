@@ -1,6 +1,6 @@
 //! Versioned manifest helpers.
 
-use std::{borrow::Cow, io::Error};
+use std::io::Error;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -156,14 +156,13 @@ impl VersionedManifest {
 		}
 	}
 
-	/// Return the share set authorized to approve share material. A v0 or v1
-	/// manifest's flat share set comes back as a tree with no groups.
+	/// Return the holder tree the quorum key envelope's key is dealt over, or `None` for a v0 or
+	/// v1 manifest, whose flat share set predates the envelope and cannot be provisioned.
 	#[must_use]
-	pub fn share_set(&self) -> Cow<'_, ShareSetV2> {
+	pub fn share_set(&self) -> Option<&ShareSetV2> {
 		match self {
-			Self::V2(manifest) => Cow::Borrowed(&manifest.share_set),
-			Self::V1(manifest) => Cow::Owned(manifest.share_set.clone().into()),
-			Self::V0(manifest) => Cow::Owned(manifest.share_set.clone().into()),
+			Self::V2(manifest) => Some(&manifest.share_set),
+			Self::V1(_) | Self::V0(_) => None,
 		}
 	}
 
@@ -446,17 +445,12 @@ impl VersionedManifestEnvelope {
 		}
 	}
 
-	/// Return the embedded share set, a flat one as a tree with no groups.
+	/// Return the embedded manifest's holder tree, or `None` for a v0 or v1 manifest.
 	#[must_use]
-	pub fn share_set(&self) -> Cow<'_, ShareSetV2> {
+	pub fn share_set(&self) -> Option<&ShareSetV2> {
 		match self {
-			Self::V2(envelope) => Cow::Borrowed(&envelope.manifest.share_set),
-			Self::V1(envelope) => {
-				Cow::Owned(envelope.manifest.share_set.clone().into())
-			}
-			Self::V0(envelope) => {
-				Cow::Owned(envelope.manifest.share_set.clone().into())
-			}
+			Self::V2(envelope) => Some(&envelope.manifest.share_set),
+			Self::V1(_) | Self::V0(_) => None,
 		}
 	}
 
@@ -625,7 +619,9 @@ mod tests {
 				threshold: 1,
 				members: vec![member.clone()],
 			},
-			share_set: ShareSet { threshold: 1, members: vec![member] }.into(),
+			share_set: ShareSet { threshold: 1, members: vec![member] }
+				.try_into()
+				.unwrap(),
 			enclave: NitroConfig {
 				pcr0: vec![0; 48],
 				pcr1: vec![1; 48],

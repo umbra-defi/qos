@@ -6,7 +6,7 @@ use crate::protocol::{
 	Hash256,
 	services::boot::{
 		Approval, BridgeConfig, ManifestSet, Namespace, NitroConfig, PivotEnv,
-		QuorumMember, RestartPolicy, ShareGroup, ShareNode, ShareSet,
+		RestartPolicy, ShareHolder, ShareHolderGroup,
 	},
 };
 
@@ -41,45 +41,33 @@ pub struct PivotConfigV2 {
 	pub env: PivotEnv,
 }
 
-/// The share set of a v2 manifest: the root of a share tree. It recovers the
-/// quorum key once `threshold` of its children are satisfied, its members
-/// first, then its groups. With no groups it serializes exactly as a flat
-/// [`ShareSet`], so flat manifests keep their hash.
+/// The share set of a v2 manifest: the top of the holder tree the quorum key envelope's key is
+/// dealt over, satisfied once `threshold` of its children are, its members first, then its groups.
+/// Holders are named by key digest, and `envelope_digest` names the envelope. A manifest without a
+/// quorum key has an empty one, which serializes as `{"threshold":0,"members":[]}`.
 #[derive(
 	PartialEq, Eq, Debug, Clone, Default, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ShareSetV2 {
-	/// Children that must be satisfied to recover the quorum key.
+	/// Children that must be satisfied to rebuild the envelope key.
 	#[serde(with = "qos_json::string_or_numeric")]
 	pub threshold: u32,
-	/// Members holding a share of the quorum key.
-	pub members: Vec<QuorumMember>,
-	/// Groups, each recovering one share of the quorum key.
+	/// Holders of a shard of the envelope key.
+	pub members: Vec<ShareHolder>,
+	/// Groups, each rebuilding one share of the envelope key.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub groups: Vec<ShareGroup>,
-}
-
-impl ShareNode for ShareSetV2 {
-	fn threshold(&self) -> u32 {
-		self.threshold
-	}
-	fn members(&self) -> &[QuorumMember] {
-		&self.members
-	}
-	fn groups(&self) -> &[ShareGroup] {
-		&self.groups
-	}
-}
-
-impl From<ShareSet> for ShareSetV2 {
-	fn from(flat: ShareSet) -> Self {
-		Self {
-			threshold: flat.threshold,
-			members: flat.members,
-			groups: vec![],
-		}
-	}
+	pub groups: Vec<ShareHolderGroup>,
+	/// [`QuorumKeyEnvelope::digest`] of the envelope the quorum key is sealed in; absent only for
+	/// a manifest without a quorum key.
+	///
+	/// [`QuorumKeyEnvelope::digest`]: crate::protocol::services::envelope::QuorumKeyEnvelope::digest
+	#[serde(
+		default,
+		skip_serializing_if = "Option::is_none",
+		with = "qos_hex::serde::option"
+	)]
+	pub envelope_digest: Option<Vec<u8>>,
 }
 
 /// Explicitly versioned JSON manifest (v2).

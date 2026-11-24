@@ -24,7 +24,10 @@ pub use manifest::{
 	ManifestBuilder, ManifestBuilderError, ManifestVersion, VersionedManifest,
 	VersionedManifestEnvelope,
 };
-pub use share_tree::{ShareGroup, ShareNode};
+pub use share_tree::{
+	ShareGroup, ShareHolder, ShareHolderGroup, ShareHolderNode, ShareNode,
+	holder_digests,
+};
 
 fn decode_borsh<T, U, V>(
 	buf: &[u8],
@@ -754,7 +757,10 @@ pub(in crate::protocol::services) fn put_manifest_and_pivot(
 		if !manifest_envelope.namespace().quorum_key.is_empty() {
 			return Err(ProtocolError::NoQuorumKeyManifestNamesQuorumKey);
 		}
-		if !manifest_envelope.share_set().is_empty() {
+		if manifest_envelope
+			.share_set()
+			.is_some_and(|set| !set.is_empty() || set.envelope_digest.is_some())
+		{
 			return Err(ProtocolError::NoQuorumKeyManifestHasShareSet);
 		}
 	}

@@ -364,6 +364,15 @@ pub enum ProtocolMsg {
 	},
 	/// Successful response to [`Self::InjectAppKeyRequest`].
 	InjectAppKeyResponse,
+	/// Hand a booted enclave the quorum key envelope its manifest names, before any shard. Anyone
+	/// may send it: the enclave accepts only the envelope whose digest the manifest carries.
+	ProvideQuorumKeyEnvelopeRequest {
+		/// The encoded [`crate::protocol::services::envelope::QuorumKeyEnvelope`].
+		#[serde(with = "qos_hex::serde")]
+		envelope: Vec<u8>,
+	},
+	/// Successful response to [`Self::ProvideQuorumKeyEnvelopeRequest`].
+	ProvideQuorumKeyEnvelopeResponse,
 }
 
 impl ProtocolMsg {
@@ -556,6 +565,12 @@ impl std::fmt::Display for ProtocolMsg {
 				write!(f, "InjectAppKeyRequest")
 			}
 			Self::InjectAppKeyResponse => write!(f, "InjectAppKeyResponse"),
+			Self::ProvideQuorumKeyEnvelopeRequest { .. } => {
+				write!(f, "ProvideQuorumKeyEnvelopeRequest")
+			}
+			Self::ProvideQuorumKeyEnvelopeResponse => {
+				write!(f, "ProvideQuorumKeyEnvelopeResponse")
+			}
 			Self::ManifestEnvelopeRequest { .. } => {
 				write!(f, "ManifestEnvelopeRequest")
 			}
@@ -591,6 +606,7 @@ mod test {
 			dr_key: None,
 			quorum_key: vec![3, 2, 1],
 			member_outputs: vec![],
+			envelope: vec![],
 			recovery_permutations: vec![],
 			dr_key_wrapped_quorum_key: None,
 			quorum_key_hash: [22; 64],
@@ -696,7 +712,9 @@ mod test {
 				env: PivotEnv::new(),
 			},
 			manifest_set: ManifestSet { threshold: 1, members: vec![] },
-			share_set: ShareSet { threshold: 1, members: vec![] }.into(),
+			share_set: ShareSet { threshold: 1, members: vec![] }
+				.try_into()
+				.unwrap(),
 			enclave: NitroConfig {
 				pcr0: vec![0; 48],
 				pcr1: vec![1; 48],
@@ -747,7 +765,9 @@ mod test {
 					env: PivotEnv::new(),
 				},
 				manifest_set: ManifestSet { threshold: 1, members: vec![] },
-				share_set: ShareSet { threshold: 1, members: vec![] }.into(),
+				share_set: ShareSet { threshold: 1, members: vec![] }
+					.try_into()
+					.unwrap(),
 				enclave: NitroConfig {
 					pcr0: vec![0; 48],
 					pcr1: vec![1; 48],

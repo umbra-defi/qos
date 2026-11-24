@@ -32,6 +32,11 @@ serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
+sha3 = "0.10"
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
+qos_nested_shamir = { workspace = true }
+rand_core06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 thiserror = { workspace = true }
 zeroize = { workspace = true, features = ["alloc"] }
 

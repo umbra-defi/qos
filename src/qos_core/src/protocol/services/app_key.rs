@@ -354,10 +354,13 @@ mod test {
 			services::{
 				app_key::{export_app_key, inject_app_key, mint_app_key},
 				boot::{
-					Approval, NitroConfig, PivotEnv, ShareSet,
+					Approval, NitroConfig, PivotEnv,
 					manifest::{
 						ManifestVersion, VersionedManifestEnvelope,
-						v2::{ManifestEnvelopeV2, ManifestV2, PivotConfigV2},
+						v2::{
+							ManifestEnvelopeV2, ManifestV2, PivotConfigV2,
+							ShareSetV2,
+						},
 					},
 				},
 				key::{
@@ -390,7 +393,7 @@ mod test {
 				env: PivotEnv::default(),
 			},
 			manifest_set: v1.manifest_set.clone(),
-			share_set: v1.share_set.clone().into(),
+			share_set: v1.share_set.clone().try_into().unwrap(),
 			enclave: v1.enclave.clone(),
 			dns: None,
 			app_key_minter: minter.map(|m| m.public_key().to_bytes()),
@@ -918,8 +921,7 @@ mod test {
 		};
 		let mut manifest = envelope.manifest;
 		manifest.namespace.quorum_key = Vec::new();
-		manifest.share_set =
-			ShareSet { threshold: 0, members: Vec::new() }.into();
+		manifest.share_set = ShareSetV2::default();
 		manifest.no_quorum_key = true;
 		approved(args, manifest)
 	}
@@ -1068,8 +1070,13 @@ mod test {
 		);
 
 		let mut has_share_set = envelope.manifest;
-		has_share_set.share_set =
-			args.manifest_envelope.manifest.share_set.clone().into();
+		has_share_set.share_set = args
+			.manifest_envelope
+			.manifest
+			.share_set
+			.clone()
+			.try_into()
+			.unwrap();
 		assert_eq!(
 			boot(
 				&mut unbooted("no_quorum_share_set"),
