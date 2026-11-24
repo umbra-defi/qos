@@ -96,13 +96,14 @@ pub(in crate::protocol) fn reshare_quorum_key(
 			not_approved("the manifest holds no quorum key envelope to reshare")
 		})?;
 
+	// An approval that does not verify counts for nothing, so one bad upload cannot block the
+	// rest.
 	let digest =
 		reshare_digest(&manifest.manifest_hash(), &new_set.holder_set()?)?;
-	for approval in approvals {
-		approval.verify(&digest).map_err(|_| {
-			not_approved("an approval does not sign this reshare")
-		})?;
-	}
+	let approvals: Vec<&Approval> = approvals
+		.iter()
+		.filter(|approval| approval.verify(&digest).is_ok())
+		.collect();
 
 	let manifest_set = manifest.manifest_set()?;
 	let manifest_approvers: BTreeSet<_> = approvals
@@ -117,10 +118,7 @@ pub(in crate::protocol) fn reshare_quorum_key(
 
 	let holder_paths = approvals
 		.iter()
-		.map(|approval| current.locate(&approval.member))
-		.collect::<Result<Vec<_>, _>>()?
-		.into_iter()
-		.flatten()
+		.filter_map(|approval| current.locate(&approval.member).ok().flatten())
 		.collect();
 	if !current.tree()?.is_satisfied_by(&holder_paths) {
 		return Err(not_approved(
@@ -360,6 +358,21 @@ mod test {
 			reshare_quorum_key(&mut world.state, &new_set, &no_u1),
 			Err(ProtocolError::ReshareNotApproved(_))
 		));
+	}
+
+	#[test]
+	fn an_approval_that_does_not_verify_is_ignored() {
+		let mut world = world("reshare_junk_approval");
+		let new_set = world.new_tree();
+		let mut approvals = world.approvals(&[0, 1, 3], &new_set);
+		let mut junk = approvals[0].clone();
+		junk.signature[0] ^= 1;
+		approvals.insert(0, junk);
+		let other = tree_of(&world.people, &[0, 1, 2], &[3, 5]);
+		approvals.extend(world.approvals(&[4], &other));
+		let (output, _) =
+			reshare_quorum_key(&mut world.state, &new_set, &approvals).unwrap();
+		assert_eq!(output.set, new_set);
 	}
 
 	#[test]

@@ -175,11 +175,13 @@ impl ProtocolRoute {
 		)
 	}
 
-	pub fn provision(_current_phase: ProtocolPhase) -> Self {
+	// A refused shard leaves the boot waiting for shards: a holder's retry, a
+	// stray post or a bad shard must not spend the boot.
+	pub fn provision(current_phase: ProtocolPhase) -> Self {
 		ProtocolRoute::new(
 			Box::new(handlers::provision),
 			ProtocolPhase::QuorumKeyProvisioned,
-			ProtocolPhase::UnrecoverableError,
+			current_phase,
 		)
 	}
 

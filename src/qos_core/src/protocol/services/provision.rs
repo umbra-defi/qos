@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use qos_nested_shamir::{Path, Shard};
+use qos_nested_shamir::{Path, Shard, point_hint};
 use zeroize::Zeroizing;
 
 use crate::protocol::{
@@ -17,7 +17,9 @@ use crate::protocol::{
 	services::{
 		app_key::{Settled, settle_quorum_key},
 		boot::{Approval, ShareHolderNode, VersionedManifestEnvelope},
-		envelope::{QuorumKeyEnvelope, decode_shard, open_quorum_key},
+		envelope::{
+			QuorumKeyEnvelope, decode_shard, envelope_binding, open_quorum_key,
+		},
 	},
 };
 
@@ -102,19 +104,35 @@ pub(in crate::protocol) fn provision(
 	if deal_id != envelope.deal_id {
 		return Err(ProtocolError::ShareNotForMember);
 	}
+	// 3) the shard is the one dealt to that holder, so a bad shard is refused alone instead of
+	// failing the rebuild of everyone's
+	let quorum_key = manifest.namespace().quorum_key.clone();
+	if let Some(hint) = envelope.hints.get(&path)
+		&& point_hint(
+			&envelope_binding(&quorum_key),
+			&envelope.deal_id,
+			&path,
+			shard.expose(),
+		) != *hint
+	{
+		return Err(ProtocolError::ShareNotForMember);
+	}
 
-	// Record the share set approval
+	// Record the share set approval once per holder, though a failed rebuild has it post again
 	state.handles.mutate_manifest_envelope(|mut envelope| {
-		match &mut envelope {
+		let approvals = match &mut envelope {
 			VersionedManifestEnvelope::V2(inner) => {
-				inner.share_set_approvals.push(approval);
+				&mut inner.share_set_approvals
 			}
 			VersionedManifestEnvelope::V1(inner) => {
-				inner.share_set_approvals.push(approval);
+				&mut inner.share_set_approvals
 			}
 			VersionedManifestEnvelope::V0(inner) => {
-				inner.share_set_approvals.push(approval);
+				&mut inner.share_set_approvals
 			}
+		};
+		if !approvals.iter().any(|held| held.member == approval.member) {
+			approvals.push(approval);
 		}
 		envelope
 	})?;
@@ -126,8 +144,7 @@ pub(in crate::protocol) fn provision(
 	}
 
 	// A finished or failed reconstruction drops the shards, so holders can post again after a
-	// failure.
-	let quorum_key = manifest.namespace().quorum_key.clone();
+	// failure; the provision route keeps the boot waiting for them.
 	let opened = open_quorum_key(
 		&envelope,
 		&quorum_key,
@@ -159,6 +176,7 @@ mod test {
 		handles::Handles,
 		protocol::{
 			ProtocolPhase,
+			msg::ProtocolMsg,
 			services::{
 				boot::{
 					ManifestBuilder, ManifestSet, Namespace, NitroConfig,
@@ -415,6 +433,76 @@ mod test {
 			Err(ProtocolError::NotShareSetMember)
 		);
 		assert_eq!(setup.members.len(), 5);
+	}
+
+	#[test]
+	fn a_tampered_shard_is_refused_alone() {
+		let mut setup = setup("provision_tampered", 1);
+		setup.provide_envelope();
+		let mut tampered = setup.shards[0].expose().to_owned();
+		tampered[0] ^= 1;
+		let sealed = setup.eph_pair.public_key().encrypt(&encode_shard(
+			&setup.envelope.deal_id,
+			&Shard::new(tampered),
+		));
+		assert_eq!(
+			provision(
+				&sealed.unwrap(),
+				setup.approvals[0].clone(),
+				&mut setup.state
+			),
+			Err(ProtocolError::ShareNotForMember)
+		);
+		assert_eq!(setup.post(0), Ok(None));
+		assert_eq!(setup.post(1), Ok(Some(Settled::Pivoting)));
+	}
+
+	#[test]
+	fn a_refused_post_through_the_route_keeps_the_boot_waiting() {
+		let mut setup = setup("provision_route_refusal", 1);
+		let request =
+			|setup: &Setup, index: usize| ProtocolMsg::ProvisionRequest {
+				share: setup.seal(&setup.envelope.deal_id, index),
+				approval: setup.approvals[index].clone(),
+			};
+		let before_envelope = request(&setup, 0);
+		assert!(matches!(
+			setup.state.handle_msg_response(&before_envelope),
+			ProtocolMsg::ProtocolErrorResponse(
+				ProtocolError::QuorumKeyEnvelopeNotProvided
+			)
+		));
+		assert_eq!(
+			setup.state.get_phase(),
+			ProtocolPhase::WaitingForQuorumShards
+		);
+
+		setup.provide_envelope();
+		let first = request(&setup, 0);
+		assert!(matches!(
+			setup.state.handle_msg_response(&first),
+			ProtocolMsg::ProvisionResponse { reconstructed: false, .. }
+		));
+		assert!(matches!(
+			setup.state.handle_msg_response(&first),
+			ProtocolMsg::ProtocolErrorResponse(
+				ProtocolError::ShareAlreadyProvisioned
+			)
+		));
+		assert_eq!(
+			setup.state.get_phase(),
+			ProtocolPhase::WaitingForQuorumShards
+		);
+
+		let second = request(&setup, 1);
+		assert!(matches!(
+			setup.state.handle_msg_response(&second),
+			ProtocolMsg::ProvisionResponse { reconstructed: true, .. }
+		));
+		assert_eq!(
+			setup.state.get_phase(),
+			ProtocolPhase::QuorumKeyProvisioned
+		);
 	}
 
 	#[test]
