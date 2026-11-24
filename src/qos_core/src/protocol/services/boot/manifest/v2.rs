@@ -45,9 +45,10 @@ pub struct PivotConfigV2 {
 /// quorum key once `threshold` of its children are satisfied, its members
 /// first, then its groups. With no groups it serializes exactly as a flat
 /// [`ShareSet`], so flat manifests keep their hash.
-#[derive(PartialEq, Eq, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(
+	PartialEq, Eq, Debug, Clone, Default, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(any(feature = "mock", test), derive(Default))]
 pub struct ShareSetV2 {
 	/// Children that must be satisfied to recover the quorum key.
 	#[serde(with = "qos_json::string_or_numeric")]

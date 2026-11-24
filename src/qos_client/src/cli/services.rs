@@ -1,4 +1,5 @@
 use std::{
+	collections::BTreeMap,
 	fs::{self, File},
 	io::{self, BufRead, Write},
 	mem,
@@ -19,8 +20,8 @@ use qos_core::protocol::{
 			ManifestEnvelope as ManifestEnvelopeV1, ManifestEnvelopeV0,
 			ManifestEnvelopeV2, ManifestSet, ManifestVersion, MemberPubKey,
 			Namespace, NitroConfig, PatchSet, PivotConfig as PivotConfigV1,
-			QuorumMember, RestartPolicy, ShareNode, ShareSet, ShareSetV2,
-			VersionedManifest, VersionedManifestEnvelope,
+			QuorumMember, RestartPolicy, ShareGroup, ShareNode, ShareSet,
+			ShareSetV2, VersionedManifest, VersionedManifestEnvelope,
 		},
 		genesis::{GenesisOutput, GenesisSet},
 		key::EncryptedQuorumKey,
@@ -744,11 +745,9 @@ fn quorum_key_and_share_set<P: AsRef<Path>>(
 	no_quorum_key: bool,
 	quorum_key_path: Option<P>,
 	share_set_dir: Option<P>,
-) -> Result<(Vec<u8>, ShareSet), Error> {
+) -> Result<(Vec<u8>, ShareSetV2), Error> {
 	match (no_quorum_key, quorum_key_path, share_set_dir) {
-		(true, None, None) => {
-			Ok((Vec::new(), ShareSet { threshold: 0, members: Vec::new() }))
-		}
+		(true, None, None) => Ok((Vec::new(), ShareSetV2::default())),
 		(true, _, _) => Err(Error::NoQuorumKeyTakesNoQuorumKeyOrShareSet),
 		(false, Some(quorum_key_path), Some(share_set_dir)) => {
 			let quorum_key = HybridPublic::from_hex_file(&quorum_key_path)
@@ -814,7 +813,11 @@ pub(crate) fn generate_manifest<P: AsRef<Path>>(
 		.bridge_config(bridge_config)
 		.debug_mode(debug_mode)
 		.manifest_set(manifest_set)
-		.share_set(share_set)
+		.share_set(ShareSet {
+			threshold: share_set.threshold,
+			members: share_set.members,
+		})
+		.share_groups(share_set.groups)
 		.patch_set(patch_set)
 		.enclave(nitro_config)
 		.build()?;
@@ -873,7 +876,11 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 		.bridge_config(bridge_config)
 		.debug_mode(debug_mode)
 		.manifest_set(manifest_set)
-		.share_set(share_set)
+		.share_set(ShareSet {
+			threshold: share_set.threshold,
+			members: share_set.members,
+		})
+		.share_groups(share_set.groups)
 		.enclave(nitro_config);
 	let manifest = match dns_resolvers {
 		Some(resolvers) => manifest.dns(DnsConfig { resolvers }),
@@ -1038,7 +1045,7 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 fn approve_manifest_programmatic_verifications(
 	manifest: &VersionedManifest,
 	manifest_set: &ManifestSet,
-	share_set: &ShareSet,
+	share_set: &ShareSetV2,
 	patch_set: Option<&PatchSet>,
 	nitro_config: &NitroConfig,
 	pivot_hash: &[u8],
@@ -1051,8 +1058,14 @@ fn approve_manifest_programmatic_verifications(
 	}
 
 	// Verify share set composition
-	if *manifest.share_set() != ShareSetV2::from(share_set.clone()) {
+	if *manifest.share_set() != *share_set {
 		eprintln!("Share Set composition does not match");
+		return false;
+	}
+	if !manifest.no_quorum_key()
+		&& let Err(e) = share_set.validate()
+	{
+		eprintln!("Share Set is not a valid share tree: {e}");
 		return false;
 	}
 
@@ -2431,6 +2444,19 @@ fn find_file_paths<P: AsRef<Path>>(dir: P) -> Vec<PathBuf> {
 		.collect()
 }
 
+/// Read a threshold file: one line holding a base 10 number.
+fn read_threshold(path: &Path) -> u32 {
+	let file = File::open(path).expect("failed to open quorum_threshold file");
+	std::io::BufReader::new(file)
+		.lines()
+		.next() // First line
+		.unwrap()
+		.unwrap()
+		.trim() // Trim any whitespace just to be sure
+		.parse() // Parse into a u32
+		.expect("Could not parse threshold into u32")
+}
+
 fn find_threshold<P: AsRef<Path>>(dir: P) -> u32 {
 	// We expect the threshold file to be named `quorum_threshold` and contain a
 	// single line with just the a base 10 number. It should live in the
@@ -2448,18 +2474,7 @@ fn find_threshold<P: AsRef<Path>>(dir: P) -> u32 {
 				return None;
 			}
 
-			let file =
-				File::open(path).expect("failed to open quorum_threshold file");
-			let threshold: u32 = std::io::BufReader::new(file)
-				.lines()
-				.next() // First line
-				.unwrap()
-				.unwrap()
-				.trim() // Trim any whitespace just to be sure
-				.parse() // Parse into a u32
-				.expect("Could not parse threshold into u32");
-
-			Some(threshold)
+			Some(read_threshold(path))
 		})
 		.collect();
 
@@ -2472,15 +2487,97 @@ fn find_threshold<P: AsRef<Path>>(dir: P) -> u32 {
 	probably_threshold.remove(0)
 }
 
-fn get_share_set<P: AsRef<Path>>(dir: P) -> ShareSet {
-	let mut members: Vec<_> = find_file_paths(&dir)
+/// Read a share set directory. Flat, it holds `<alias>.pub` members and one
+/// `quorum_threshold`, as ever. A share tree names each group by its path:
+/// `<group>.quorum_threshold` declares a group and its threshold,
+/// `<group>.<subgroup>.quorum_threshold` a group inside it, and
+/// `<group>.<alias>.pub` a member of it. Once any group is declared, every
+/// member's prefix must name a declared group, and a group inside an
+/// undeclared parent panics.
+fn get_share_set<P: AsRef<Path>>(dir: P) -> ShareSetV2 {
+	let (threshold, members, groups) = read_share_tree(dir);
+	ShareSetV2 { threshold, members, groups }
+}
+
+fn read_share_tree<P: AsRef<Path>>(
+	dir: P,
+) -> (u32, Vec<QuorumMember>, Vec<ShareGroup>) {
+	let paths: Vec<_> = find_file_paths(&dir)
+		.into_iter()
+		.filter(|path| path.is_file())
+		.collect();
+
+	let mut nodes: BTreeMap<Vec<String>, (u32, Vec<QuorumMember>)> =
+		BTreeMap::new();
+	for path in &paths {
+		let mut segments = split_file_name(path);
+		if segments.len() < 2
+			|| segments.last().map(String::as_str)
+				!= Some(QUORUM_THRESHOLD_FILE)
+		{
+			continue;
+		}
+		segments.pop();
+		nodes.insert(segments, (read_threshold(path), Vec::new()));
+	}
+	if nodes.is_empty() {
+		let mut members = read_flat_members(&paths);
+		// We want to try and build the same manifest regardless of the OS.
+		members.sort();
+		return (find_threshold(dir), members, Vec::new());
+	}
+	nodes.insert(Vec::new(), (find_threshold(&dir), Vec::new()));
+
+	for group_path in nodes.keys() {
+		if let Some((_, parent)) = group_path.split_last() {
+			assert!(
+				nodes.contains_key(parent),
+				"share group {} sits in an undeclared group: add {}.{QUORUM_THRESHOLD_FILE}",
+				group_path.join("."),
+				parent.join(".")
+			);
+		}
+	}
+
+	for path in &paths {
+		let mut segments = split_file_name(path);
+		if segments.last().is_none_or(|s| s.as_str() != PUB_EXT) {
+			continue;
+		}
+		segments.pop();
+		let alias = segments.pop().unwrap_or_else(|| {
+			panic!("{} names no member alias", path.display())
+		});
+		let public = HybridPublic::from_hex_file(path).unwrap_or_else(|e| {
+			panic!(
+				"get_share_set: Could not read public key from {}: {e:?}",
+				path.display()
+			)
+		});
+		let (_, members) = nodes.get_mut(&segments).unwrap_or_else(|| {
+			panic!(
+				"{} belongs to undeclared share group {}: add {}.{QUORUM_THRESHOLD_FILE}",
+				path.display(),
+				segments.join("."),
+				segments.join(".")
+			)
+		});
+		members.push(QuorumMember { alias, pub_key: public.to_bytes() });
+	}
+
+	let (threshold, members, groups) = take_share_node(&mut nodes, &[]);
+	(threshold, members, groups)
+}
+
+/// Members of a flat share set directory: `<alias>[.<anything>].pub`.
+fn read_flat_members(paths: &[PathBuf]) -> Vec<QuorumMember> {
+	paths
 		.iter()
 		.filter_map(|path| {
 			let mut file_name = split_file_name(path);
 			if file_name.last().is_none_or(|s| s.as_str() != PUB_EXT) {
 				return None;
 			}
-
 			let public =
 				HybridPublic::from_hex_file(path).unwrap_or_else(|e| {
 					panic!(
@@ -2493,12 +2590,33 @@ fn get_share_set<P: AsRef<Path>>(dir: P) -> ShareSet {
 				pub_key: public.to_bytes(),
 			})
 		})
-		.collect();
+		.collect()
+}
 
-	// We want to try and build the same manifest regardless of the OS.
+/// Remove the node at `path` and its descendants from `nodes`, members and
+/// groups sorted so every OS builds the same manifest.
+fn take_share_node(
+	nodes: &mut BTreeMap<Vec<String>, (u32, Vec<QuorumMember>)>,
+	path: &[String],
+) -> (u32, Vec<QuorumMember>, Vec<ShareGroup>) {
+	let (threshold, mut members) =
+		nodes.remove(path).expect("every share node path was declared");
 	members.sort();
-
-	ShareSet { members, threshold: find_threshold(dir) }
+	let children: Vec<Vec<String>> = nodes
+		.keys()
+		.filter(|key| key.len() == path.len() + 1 && key.starts_with(path))
+		.cloned()
+		.collect();
+	let groups = children
+		.into_iter()
+		.map(|child| {
+			let (threshold, members, groups) = take_share_node(nodes, &child);
+			let alias =
+				child.last().expect("a group path is never empty").clone();
+			ShareGroup { alias, threshold, members, groups }
+		})
+		.collect();
+	(threshold, members, groups)
 }
 
 fn get_manifest_set<P: AsRef<Path>>(dir: P) -> ManifestSet {
@@ -2556,35 +2674,11 @@ fn get_patch_set<P: AsRef<Path>>(dir: P) -> PatchSet {
 	PatchSet { members, threshold: find_threshold(dir) }
 }
 
+/// Read a genesis set from a share set directory laid out as
+/// [`get_share_set`] reads it.
 fn get_genesis_set<P: AsRef<Path>>(dir: P) -> GenesisSet {
-	let mut members: Vec<_> = find_file_paths(&dir)
-		.iter()
-		.filter_map(|path| {
-			let mut file_name = split_file_name(path);
-			if file_name.last().is_none_or(|s| s.as_str() != PUB_EXT) {
-				return None;
-			}
-
-			let public = HybridPublic::from_hex_file(path)
-				.map_err(|e| {
-					panic!(
-						"Could not read hex from share_key.pub: {}: {e:?}",
-						path.display()
-					)
-				})
-				.unwrap();
-
-			Some(QuorumMember {
-				alias: mem::take(&mut file_name[0]),
-				pub_key: public.to_bytes(),
-			})
-		})
-		.collect();
-
-	// We want to try and build the same manifest regardless of the OS.
-	members.sort();
-
-	GenesisSet { members, threshold: find_threshold(dir), groups: vec![] }
+	let (threshold, members, groups) = read_share_tree(dir);
+	GenesisSet { members, threshold, groups }
 }
 
 fn find_approvals<P: AsRef<Path>>(
@@ -2935,7 +3029,7 @@ mod tests {
 			ManifestEnvelopeV2, ManifestSet, ManifestV2, ManifestVersion,
 			MemberPubKey, Namespace, NitroConfig, PatchSet, PivotConfig,
 			PivotConfigV2, PivotEnv, QuorumMember, RestartPolicy, ShareSet,
-			VersionedManifest, VersionedManifestEnvelope,
+			ShareSetV2, VersionedManifest, VersionedManifestEnvelope,
 		},
 	};
 	use qos_hybrid::{HybridPair, HybridPublic};
@@ -2952,7 +3046,7 @@ mod tests {
 	struct Setup {
 		manifest: VersionedManifest,
 		manifest_set: ManifestSet,
-		share_set: ShareSet,
+		share_set: ShareSetV2,
 		nitro_config: NitroConfig,
 		pivot_hash: Vec<u8>,
 		quorum_key: HybridPublic,
@@ -3033,7 +3127,7 @@ mod tests {
 		Setup {
 			manifest,
 			manifest_set,
-			share_set,
+			share_set: share_set.into(),
 			nitro_config,
 			pivot_hash,
 			quorum_key,
@@ -3165,7 +3259,7 @@ mod tests {
 				)
 				.unwrap();
 			assert!(quorum_key.is_empty());
-			assert_eq!(share_set, ShareSet { threshold: 0, members: vec![] });
+			assert_eq!(share_set, ShareSetV2::default());
 		}
 
 		#[test]
@@ -4247,5 +4341,144 @@ mod tests {
 		assert_eq!(names, vec!["alice.pub"]);
 
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	mod share_set_dir {
+		use std::path::{Path, PathBuf};
+
+		use qos_core::protocol::services::{
+			boot::{QuorumMember, ShareGroup, ShareSetV2},
+			genesis::GenesisSet,
+		};
+		use qos_hybrid::{HybridPair, HybridPublic};
+
+		use super::super::{get_genesis_set, get_share_set};
+
+		struct Dir(PathBuf);
+
+		impl Dir {
+			fn new(name: &str) -> Self {
+				let dir = std::env::temp_dir().join(name);
+				let _ = std::fs::remove_dir_all(&dir);
+				std::fs::create_dir_all(&dir).unwrap();
+				Self(dir)
+			}
+
+			fn threshold(&self, name: &str, threshold: u32) {
+				std::fs::write(self.0.join(name), threshold.to_string())
+					.unwrap();
+			}
+
+			/// Write `<file_name>.pub` and return the member it should read as.
+			fn member(&self, file_name: &str, alias: &str) -> QuorumMember {
+				let public = HybridPair::generate().unwrap().public_key();
+				public
+					.to_hex_file(self.0.join(format!("{file_name}.pub")))
+					.unwrap();
+				QuorumMember {
+					alias: alias.to_string(),
+					pub_key: HybridPublic::from_hex_file(
+						self.0.join(format!("{file_name}.pub")),
+					)
+					.unwrap()
+					.to_bytes(),
+				}
+			}
+
+			fn path(&self) -> &Path {
+				&self.0
+			}
+		}
+
+		impl Drop for Dir {
+			fn drop(&mut self) {
+				let _ = std::fs::remove_dir_all(&self.0);
+			}
+		}
+
+		#[test]
+		fn a_flat_directory_reads_as_before() {
+			let dir = Dir::new("share_set_dir_flat");
+			dir.threshold("quorum_threshold", 2);
+			let alice = dir.member("alice", "alice");
+			// Anything between the alias and `.pub` is ignored, as it always was.
+			let bob = dir.member("bob.share", "bob");
+			assert_eq!(
+				get_share_set(dir.path()),
+				ShareSetV2 {
+					threshold: 2,
+					members: vec![alice, bob],
+					groups: vec![]
+				}
+			);
+		}
+
+		#[test]
+		fn file_names_carry_the_group_path() {
+			let dir = Dir::new("share_set_dir_tree");
+			dir.threshold("quorum_threshold", 2);
+			dir.threshold("umbra.quorum_threshold", 2);
+			dir.threshold("external.quorum_threshold", 1);
+			dir.threshold("external.team1.quorum_threshold", 1);
+			let lead = dir.member("lead", "lead");
+			let u0 = dir.member("umbra.u0", "u0");
+			let u1 = dir.member("umbra.u1", "u1");
+			let e0 = dir.member("external.e0", "e0");
+			let c0 = dir.member("external.team1.c0", "c0");
+
+			let expected = ShareSetV2 {
+				threshold: 2,
+				members: vec![lead],
+				groups: vec![
+					ShareGroup {
+						alias: "external".to_string(),
+						threshold: 1,
+						members: vec![e0],
+						groups: vec![ShareGroup {
+							alias: "team1".to_string(),
+							threshold: 1,
+							members: vec![c0],
+							groups: vec![],
+						}],
+					},
+					ShareGroup {
+						alias: "umbra".to_string(),
+						threshold: 2,
+						members: vec![u0, u1],
+						groups: vec![],
+					},
+				],
+			};
+			assert_eq!(get_share_set(dir.path()), expected);
+			assert_eq!(
+				get_genesis_set(dir.path()),
+				GenesisSet {
+					members: expected.members,
+					threshold: expected.threshold,
+					groups: expected.groups,
+				}
+			);
+		}
+
+		#[test]
+		#[should_panic(expected = "undeclared share group umbra")]
+		fn a_member_of_an_undeclared_group_panics() {
+			let dir = Dir::new("share_set_dir_undeclared_group");
+			dir.threshold("quorum_threshold", 1);
+			dir.threshold("external.quorum_threshold", 1);
+			dir.member("external.e0", "e0");
+			dir.member("umbra.u0", "u0");
+			get_share_set(dir.path());
+		}
+
+		#[test]
+		#[should_panic(expected = "sits in an undeclared group")]
+		fn a_group_in_an_undeclared_parent_panics() {
+			let dir = Dir::new("share_set_dir_undeclared_parent");
+			dir.threshold("quorum_threshold", 1);
+			dir.threshold("external.team1.quorum_threshold", 1);
+			dir.member("external.team1.c0", "c0");
+			get_share_set(dir.path());
+		}
 	}
 }
