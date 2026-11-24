@@ -192,6 +192,15 @@ impl ProtocolRoute {
 		)
 	}
 
+	// A reshare, done or refused, leaves the enclave provisioned.
+	pub fn reshare_quorum_key(current_phase: ProtocolPhase) -> Self {
+		ProtocolRoute::new(
+			Box::new(handlers::reshare_quorum_key),
+			current_phase,
+			current_phase,
+		)
+	}
+
 	pub fn export_key(current_phase: ProtocolPhase) -> Self {
 		ProtocolRoute::new(
 			Box::new(handlers::export_key),
@@ -414,6 +423,7 @@ impl ProtocolState {
 					// phase specific routes
 					ProtocolRoute::export_key(self.phase),
 					ProtocolRoute::export_app_key(self.phase),
+					ProtocolRoute::reshare_quorum_key(self.phase),
 				]
 			}
 			ProtocolPhase::WaitingForForwardedKey => {
@@ -522,7 +532,7 @@ mod handlers {
 		msg::ProtocolMsg,
 		services::{
 			app_key, app_key::Settled, attestation, boot, genesis, key,
-			key::EncryptedQuorumKey, provision,
+			key::EncryptedQuorumKey, provision, reshare,
 		},
 	};
 
@@ -584,6 +594,26 @@ mod handlers {
 				.map_err(ProtocolMsg::ProtocolErrorResponse);
 
 			Some(result)
+		} else {
+			None
+		}
+	}
+
+	pub(super) fn reshare_quorum_key(
+		req: &ProtocolMsg,
+		state: &mut ProtocolState,
+	) -> ProtocolRouteResponse {
+		if let ProtocolMsg::ReshareQuorumKeyRequest { set, approvals } = req {
+			Some(
+				reshare::reshare_quorum_key(state, set, approvals)
+					.map(|(output, nsm_response)| {
+						ProtocolMsg::ReshareQuorumKeyResponse {
+							nsm_response,
+							output: Box::new(output),
+						}
+					})
+					.map_err(ProtocolMsg::ProtocolErrorResponse),
+			)
 		} else {
 			None
 		}

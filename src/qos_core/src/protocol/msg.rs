@@ -11,6 +11,7 @@ use crate::protocol::{
 	services::{
 		boot::{Approval, VersionedManifestEnvelope},
 		genesis::{GenesisOutput, GenesisSet},
+		reshare::ReshareOutput,
 	},
 };
 
@@ -373,6 +374,22 @@ pub enum ProtocolMsg {
 	},
 	/// Successful response to [`Self::ProvideQuorumKeyEnvelopeRequest`].
 	ProvideQuorumKeyEnvelopeResponse,
+	/// Order a provisioned enclave to seal its quorum key under a fresh envelope key dealt over a
+	/// new holder tree. See [`crate::protocol::services::reshare`].
+	ReshareQuorumKeyRequest {
+		/// The new holder tree, with full keys.
+		set: GenesisSet,
+		/// Approvals of the reshare digest, satisfying the current holder tree and the manifest
+		/// set.
+		approvals: Vec<Approval>,
+	},
+	/// Successful response to [`Self::ReshareQuorumKeyRequest`].
+	ReshareQuorumKeyResponse {
+		/// COSE SIGN1 attestation whose user data is the output's hash.
+		nsm_response: NsmResponse,
+		/// The new envelope and each new holder's encrypted shard.
+		output: Box<ReshareOutput>,
+	},
 }
 
 impl ProtocolMsg {
@@ -570,6 +587,12 @@ impl std::fmt::Display for ProtocolMsg {
 			}
 			Self::ProvideQuorumKeyEnvelopeResponse => {
 				write!(f, "ProvideQuorumKeyEnvelopeResponse")
+			}
+			Self::ReshareQuorumKeyRequest { .. } => {
+				write!(f, "ReshareQuorumKeyRequest")
+			}
+			Self::ReshareQuorumKeyResponse { .. } => {
+				write!(f, "ReshareQuorumKeyResponse")
 			}
 			Self::ManifestEnvelopeRequest { .. } => {
 				write!(f, "ManifestEnvelopeRequest")

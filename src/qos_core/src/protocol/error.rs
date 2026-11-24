@@ -244,6 +244,9 @@ pub enum ProtocolError {
 	QuorumKeyEnvelope(String),
 	/// A shard was posted before the quorum key envelope the manifest names.
 	QuorumKeyEnvelopeNotProvided,
+	/// A reshare's approvals do not sign it, or do not satisfy both the current holder tree and
+	/// the manifest set.
+	ReshareNotApproved(String),
 }
 
 impl From<std::io::Error> for ProtocolError {
@@ -514,6 +517,9 @@ impl std::fmt::Display for ProtocolError {
 				f,
 				"post the quorum key envelope the manifest names before any shard"
 			),
+			Self::ReshareNotApproved(reason) => {
+				write!(f, "reshare not approved: {reason}")
+			}
 		}
 	}
 }
