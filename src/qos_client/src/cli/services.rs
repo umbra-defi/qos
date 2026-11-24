@@ -981,7 +981,7 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 	let nitro_config =
 		extract_nitro_config(qos_release_dir_path, pcr3_preimage_path);
 	let pivot_hash = extract_pivot_hash(pivot_hash_path);
-	let manifest_set = get_manifest_set(manifest_set_dir);
+	let manifest_holders = get_manifest_holders(manifest_set_dir);
 	let (quorum_key, share_set) = quorum_key_and_share_set(
 		no_quorum_key,
 		quorum_key_path,
@@ -996,7 +996,7 @@ pub(crate) fn generate_manifest_v2<P: AsRef<Path>>(
 		.pivot_args(pivot_args)
 		.bridge_config(bridge_config)
 		.debug_mode(debug_mode)
-		.manifest_set(manifest_set)
+		.manifest_holders(manifest_holders)
 		.share_holders(share_set)
 		.enclave(nitro_config);
 	let manifest = match dns_resolvers {
@@ -1119,7 +1119,7 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 
 	if !approve_manifest_programmatic_verifications(
 		&manifest,
-		&get_manifest_set(manifest_set_dir),
+		&get_manifest_holders(manifest_set_dir),
 		&share_set,
 		patch_set.as_ref(),
 		&extract_nitro_config(qos_release_dir_path, pcr3_preimage_path),
@@ -1170,7 +1170,7 @@ pub(crate) fn approve_manifest<P: AsRef<Path>>(
 
 fn approve_manifest_programmatic_verifications(
 	manifest: &VersionedManifest,
-	manifest_set: &ManifestSet,
+	manifest_set: &ManifestSetV2,
 	share_set: &ExpectedShareSet,
 	patch_set: Option<&PatchSet>,
 	nitro_config: &NitroConfig,
@@ -1997,7 +1997,7 @@ pub(crate) fn proxy_re_encrypt_share<P: AsRef<Path>>(
 
 	if !proxy_re_encrypt_share_programmatic_verifications(
 		&manifest_envelope,
-		&get_manifest_set(manifest_set_dir),
+		&get_manifest_holders(manifest_set_dir),
 		&member,
 	) {
 		eprintln!("Exiting early without re-encrypting / approving");
@@ -2048,22 +2048,20 @@ pub(crate) fn proxy_re_encrypt_share<P: AsRef<Path>>(
 	Ok(())
 }
 
-/// Whether the manifest names `expected`'s members, by key digest, and its
-/// threshold, in any order.
+/// Whether the manifest names `expected`'s tree: every threshold, group and
+/// member by key digest, in any order.
 fn names_manifest_set(
 	manifest: &VersionedManifest,
-	expected: &ManifestSet,
+	expected: &ManifestSetV2,
 ) -> bool {
-	let Ok(named) = manifest.manifest_set() else {
-		return false;
-	};
-	ManifestSetV2::try_from(expected)
-		.is_ok_and(|expected| expected.normalised() == named.normalised())
+	manifest
+		.manifest_set()
+		.is_ok_and(|named| expected.normalised() == named.normalised())
 }
 
 fn proxy_re_encrypt_share_programmatic_verifications(
 	manifest_envelope: &VersionedManifestEnvelope,
-	manifest_set: &ManifestSet,
+	manifest_set: &ManifestSetV2,
 	member: &QuorumMember,
 ) -> bool {
 	let manifest = manifest_envelope.clone().manifest();
@@ -3047,6 +3045,21 @@ fn take_share_node(
 	(threshold, members, groups)
 }
 
+/// The manifest set directory as a v2 manifest names it: a tree read as the
+/// share set directory is, members by key digest.
+fn get_manifest_holders<P: AsRef<Path>>(dir: P) -> ManifestSetV2 {
+	let (threshold, members, groups) = read_share_tree(dir);
+	let set =
+		ManifestSetV2::from_tree(&GenesisSet { members, threshold, groups })
+			.expect(
+				"get_manifest_holders: a manifest set member is not a hybrid key",
+			);
+	set.validate().unwrap_or_else(|e| {
+		panic!("get_manifest_holders: invalid manifest set: {e:?}")
+	});
+	set
+}
+
 fn get_manifest_set<P: AsRef<Path>>(dir: P) -> ManifestSet {
 	let mut members: Vec<_> = find_file_paths(&dir)
 		.iter()
@@ -3162,10 +3175,12 @@ fn find_approvals<P: AsRef<Path>>(
 		})
 		.collect();
 	assert!(
-		approvals.len()
-			>= manifest
-				.manifest_set()
-				.map_or(usize::MAX, |set| set.threshold as usize)
+		manifest.manifest_set().is_ok_and(|set| set
+			.is_satisfied_by_members(
+				approvals.iter().map(|approval: &Approval| &approval.member)
+			)
+			.unwrap_or(false)),
+		"the approvals do not satisfy the Manifest Set"
 	);
 
 	approvals
@@ -3758,7 +3773,10 @@ mod tests {
 
 			assert!(approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3785,7 +3803,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3812,7 +3833,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3838,7 +3862,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3864,7 +3891,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3890,7 +3920,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3916,7 +3949,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3942,7 +3978,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3968,7 +4007,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -3994,7 +4036,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -4020,7 +4065,10 @@ mod tests {
 
 			assert!(!approve_manifest_programmatic_verifications(
 				&manifest,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&ExpectedShareSet::Flat(share_set.clone()),
 				Some(&patch_set),
 				&nitro_config,
@@ -4287,7 +4335,10 @@ mod tests {
 			let member = share_set.members[0].clone();
 			assert!(proxy_re_encrypt_share_programmatic_verifications(
 				&manifest_envelope,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&member
 			));
 		}
@@ -4299,7 +4350,10 @@ mod tests {
 			let member = share_set.members[0].clone();
 			assert!(!proxy_re_encrypt_share_programmatic_verifications(
 				&manifest_envelope,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&member
 			));
 		}
@@ -4319,7 +4373,10 @@ mod tests {
 			let member = share_set.members[0].clone();
 			assert!(!proxy_re_encrypt_share_programmatic_verifications(
 				&manifest_envelope,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&member
 			));
 		}
@@ -4340,7 +4397,10 @@ mod tests {
 			let member = share_set.members[0].clone();
 			assert!(!proxy_re_encrypt_share_programmatic_verifications(
 				&manifest_envelope,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&member
 			));
 		}
@@ -4359,7 +4419,10 @@ mod tests {
 			let member = share_set.members[0].clone();
 			assert!(!proxy_re_encrypt_share_programmatic_verifications(
 				&manifest_envelope,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&member
 			));
 		}
@@ -4381,7 +4444,10 @@ mod tests {
 			let member = share_set.members[0].clone();
 			assert!(!proxy_re_encrypt_share_programmatic_verifications(
 				&manifest_envelope,
-				&manifest_set,
+				&qos_core::protocol::services::boot::ManifestSetV2::try_from(
+					&manifest_set
+				)
+				.unwrap(),
 				&member
 			));
 		}
@@ -4872,6 +4938,43 @@ mod tests {
 		}
 
 		#[test]
+		fn a_manifest_set_directory_reads_as_a_tree_or_flat() {
+			use qos_core::protocol::services::boot::{
+				MemberDigest, ShareHolderNode,
+			};
+
+			use super::super::get_manifest_holders;
+
+			let tree = Dir::new("manifest_set_dir_tree");
+			tree.threshold("quorum_threshold", 2);
+			tree.threshold("umbra.quorum_threshold", 2);
+			tree.threshold("external.quorum_threshold", 1);
+			let u0 = tree.member("umbra.u0", "u0");
+			let u1 = tree.member("umbra.u1", "u1");
+			let e0 = tree.member("external.e0", "e0");
+			let set = get_manifest_holders(tree.path());
+			assert_eq!(set.threshold, 2);
+			assert!(set.members.is_empty());
+			assert_eq!(
+				set.groups.iter().map(|g| g.alias.as_str()).collect::<Vec<_>>(),
+				["external", "umbra"]
+			);
+			assert!(set.is_satisfied_by_members([&u0, &u1, &e0]).unwrap());
+			assert!(!set.is_satisfied_by_members([&u0, &u1]).unwrap());
+
+			let flat = Dir::new("manifest_set_dir_flat");
+			flat.threshold("quorum_threshold", 1);
+			let only = flat.member("p1", "p1");
+			let set = get_manifest_holders(flat.path());
+			assert_eq!(set.threshold, 1);
+			assert!(set.groups.is_empty());
+			assert_eq!(
+				set.members,
+				vec![MemberDigest::from_member(&only).unwrap()]
+			);
+		}
+
+		#[test]
 		fn a_flat_directory_reads_as_before() {
 			let dir = Dir::new("share_set_dir_flat");
 			dir.threshold("quorum_threshold", 2);
@@ -4997,7 +5100,7 @@ mod tests {
 			let quorum = HybridPair::generate().unwrap();
 			let quorum_key = quorum.public_key().to_bytes();
 			let (envelope, shards) = seal_quorum_key(
-				&quorum.to_master_seed(),
+				quorum.to_master_seed(),
 				&quorum_key,
 				&holders.tree().unwrap(),
 			)
