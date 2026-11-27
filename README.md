@@ -169,7 +169,7 @@ If something goes wrong during a release and you want to retry, you can open a P
 
 ### Quorum Key
 
-A set of keys used for authentication, public key encryption, and encryption at rest: ML-DSA-87 + Ed25519 signing, ML-KEM-1024 + X25519 encryption and AES-256-GCM, each scheme holding while either of its halves does. They are derived from a single seed. See the [QOS Hybrid Key Set Specification](./src/qos_hybrid/SPEC.md) for details. The Quorum Key should only ever be reconstituted inside of an enclave. Additionally, the full provisioning of the Quorum Key concludes the attestation flow, at which point QuorumOS pivots to launching the specified enclave app. At rest, outside of the enclave, the key is intended to be stored across shares using shamir's secret sharing. Note that key shares are always intended to be stored encrypted to the Personal Key, never in plaintext.
+A set of keys used for authentication, public key encryption, and encryption at rest: ML-DSA-87 + SLH-DSA-SHA2-256s + Ed25519 signing, ML-KEM-1024 + X25519 encryption and AES-256-GCM, each scheme holding while any one of its parts does. They are derived from a single seed. See the [QOS Hybrid Key Set Specification](./src/qos_hybrid/SPEC.md) for details. The Quorum Key should only ever be reconstituted inside of an enclave. Additionally, the full provisioning of the Quorum Key concludes the attestation flow, at which point QuorumOS pivots to launching the specified enclave app. At rest, outside of the enclave, the key is intended to be stored across shares using shamir's secret sharing. Note that key shares are always intended to be stored encrypted to the Personal Key, never in plaintext.
 
 You can learn more about how to use the quorum key in [Enclave Keys](docs/enclave_keys.md).
 

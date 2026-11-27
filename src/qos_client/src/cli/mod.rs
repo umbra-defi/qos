@@ -240,7 +240,8 @@ pub enum Command {
 	InjectAppKey,
 	/// Verify a signature from `qos_hybrid` pair.
 	HybridVerify,
-	/// Sign with an ML-DSA-87 + Ed25519 signature from a hybrid master seed.
+	/// Sign with an ML-DSA-87 + SLH-DSA-SHA2-256s + Ed25519 signature from a
+	/// hybrid master seed.
 	HybridSign,
 	/// Encrypt to a `qos_hybrid` public key.
 	HybridAsymmetricEncrypt,
