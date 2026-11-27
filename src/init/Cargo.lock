@@ -597,6 +597,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fips205"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a5a5dcc490a93ad15deabf0534af8b2b6e9d20e01e8066f6fcba4da7e316100"
+dependencies = [
+ "rand_core 0.6.4",
+ "sha2",
+ "sha3",
+ "zeroize",
+]
+
+[[package]]
 name = "flagset"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1594,12 +1606,13 @@ dependencies = [
 
 [[package]]
 name = "sha3"
-version = "0.10.8"
+version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
+checksum = "77fd7028345d415a4034cf8777cd4f8ab1851274233b45f84e3d955502d93874"
 dependencies = [
  "digest",
  "keccak",
+ "zeroize",
 ]
 
 [[package]]
@@ -1841,7 +1854,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "umbra_qos_core"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "aes-gcm",
  "aws-nitro-enclaves-nsm-api",
@@ -1871,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_crypto"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "rand 0.9.4",
  "sha2",
@@ -1882,20 +1895,21 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_hex"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "umbra_qos_hybrid"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "aes-gcm",
  "borsh",
  "ed25519-dalek",
  "fips203",
  "fips204",
+ "fips205",
  "hkdf",
  "rand_core 0.9.3",
  "serde",
@@ -1907,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_json"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1917,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_nested_shamir"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "rand_core 0.6.4",
  "sha3",
@@ -1927,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "umbra_qos_nsm"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",

@@ -1499,10 +1499,15 @@ mod test {
 				member("a", pair_a.public_key().to_bytes()),
 				member("b", with_component(&pair_b, &pair_a, 1)),
 			],
-			// Same Ed25519 half alone
+			// Same SLH-DSA part alone
 			vec![
 				member("a", pair_a.public_key().to_bytes()),
 				member("b", with_component(&pair_b, &pair_a, 3)),
+			],
+			// Same Ed25519 part alone
+			vec![
+				member("a", pair_a.public_key().to_bytes()),
+				member("b", with_component(&pair_b, &pair_a, 4)),
 			],
 		];
 		for members in duplicate_sets {

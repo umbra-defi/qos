@@ -12,13 +12,13 @@ const QOS_CLIENT: &str = env!("CARGO_BIN_EXE_qos_client");
 const PIVOT_BYTES: &[u8] = b"mono compat pivot bytes";
 const PIVOT_SHA256_HEX: &str =
 	"6851e7d5d3200c971307b7f3d02c35dc685413215392f1b35fa5ecb53264d963";
-const MANIFEST_BORSH_LEN: usize = 17812;
+const MANIFEST_BORSH_LEN: usize = 18068;
 const MANIFEST_BORSH_SHA256_HEX: &str =
-	"43ddbcdecff83b1855d7957a6abb5a6bb8cf801991cdff5656ff0f5364b852e5";
-const MANIFEST_ENVELOPE_BORSH_LEN: usize = 26750;
-const MANIFEST_V0_BORSH_LEN: usize = 17798;
+	"f58e82abcd3fab855195788857eb5cac8ee62093458278677df6526cf1de7d66";
+const MANIFEST_ENVELOPE_BORSH_LEN: usize = 56862;
+const MANIFEST_V0_BORSH_LEN: usize = 18054;
 const MANIFEST_V0_BORSH_SHA256_HEX: &str =
-	"8297c1120778d5ba6817feb5716266ec6f98e88c60a49ec0b978785571fd4287";
+	"a0c19f44baa2c17089e3a476488e866c6238da3d06ffbe114141131a3a980ffd";
 
 const EXPECTED_MANIFEST_JSON_TEMPLATE: &str = concat!(
 	"{\"namespace\":{\"name\":\"production/signer\",\"nonce\"",

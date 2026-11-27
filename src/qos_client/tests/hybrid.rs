@@ -42,7 +42,7 @@ fn hybrid_sign_verify_roundtrip() {
 	assert_eq!(
 		qos_hex::decode(&signature).unwrap().len(),
 		qos_hybrid::SIGNATURE_LEN,
-		"hybrid-sign must write one hex ML-DSA-87 + Ed25519 signature"
+		"hybrid-sign must write one hex ML-DSA-87 + SLH-DSA-SHA2-256s + Ed25519 signature"
 	);
 
 	assert!(

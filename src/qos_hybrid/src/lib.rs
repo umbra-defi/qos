@@ -9,7 +9,7 @@ use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 use crate::{
 	encrypt::{AesGcm256Secret, HybridEncryptPair, HybridEncryptPublic},
-	sign::{HybridSignPair, HybridSignPublic},
+	sign::{HybridSignPair, HybridSignPublic, SlhDsaSeeds},
 };
 
 pub mod encrypt;
@@ -23,6 +23,15 @@ pub const ML_KEM_Z_DERIVE_PATH: &[u8] = b"qos_hybrid_ml_kem_1024_z";
 pub const X25519_DERIVE_PATH: &[u8] = b"qos_hybrid_x25519";
 /// Master seed derive path for the ML-DSA-87 `xi` seed.
 pub const ML_DSA_XI_DERIVE_PATH: &[u8] = b"qos_hybrid_ml_dsa_87_xi";
+/// Master seed derive path for the SLH-DSA-SHA2-256s `SK.seed`.
+pub const SLH_DSA_SECRET_SEED_DERIVE_PATH: &[u8] =
+	b"qos_hybrid_slh_dsa_sha2_256s_sk_seed";
+/// Master seed derive path for the SLH-DSA-SHA2-256s `SK.prf`.
+pub const SLH_DSA_SECRET_PRF_DERIVE_PATH: &[u8] =
+	b"qos_hybrid_slh_dsa_sha2_256s_sk_prf";
+/// Master seed derive path for the SLH-DSA-SHA2-256s `PK.seed`.
+pub const SLH_DSA_PUBLIC_SEED_DERIVE_PATH: &[u8] =
+	b"qos_hybrid_slh_dsa_sha2_256s_pk_seed";
 /// Master seed derive path for the Ed25519 seed.
 pub const ED25519_DERIVE_PATH: &[u8] = b"qos_hybrid_ed25519";
 /// Master seed derive path for the AES-256-GCM secret.
@@ -46,14 +55,21 @@ pub const ENCRYPT_PUBLIC_LEN: usize = ML_KEM_PUBLIC_LEN + X25519_PUBLIC_LEN;
 pub const ML_DSA_PUBLIC_LEN: usize = fips204::ml_dsa_87::PK_LEN;
 /// Length of an ML-DSA-87 signature.
 pub const ML_DSA_SIGNATURE_LEN: usize = fips204::ml_dsa_87::SIG_LEN;
+/// Length of an SLH-DSA-SHA2-256s public key.
+pub const SLH_DSA_PUBLIC_LEN: usize = fips205::slh_dsa_sha2_256s::PK_LEN;
+/// Length of an SLH-DSA-SHA2-256s signature.
+pub const SLH_DSA_SIGNATURE_LEN: usize = fips205::slh_dsa_sha2_256s::SIG_LEN;
 /// Length of an Ed25519 public key.
 pub const ED25519_PUBLIC_LEN: usize = ed25519_dalek::PUBLIC_KEY_LENGTH;
 /// Length of an Ed25519 signature.
 pub const ED25519_SIGNATURE_LEN: usize = ed25519_dalek::SIGNATURE_LENGTH;
 /// Length of the signing half of a [`HybridPublic`].
-pub const SIGN_PUBLIC_LEN: usize = ML_DSA_PUBLIC_LEN + ED25519_PUBLIC_LEN;
-/// Length of a hybrid signature, `ml_dsa_87_signature||ed25519_signature`.
-pub const SIGNATURE_LEN: usize = ML_DSA_SIGNATURE_LEN + ED25519_SIGNATURE_LEN;
+pub const SIGN_PUBLIC_LEN: usize =
+	ML_DSA_PUBLIC_LEN + SLH_DSA_PUBLIC_LEN + ED25519_PUBLIC_LEN;
+/// Length of a hybrid signature,
+/// `ml_dsa_87_signature||slh_dsa_sha2_256s_signature||ed25519_signature`.
+pub const SIGNATURE_LEN: usize =
+	ML_DSA_SIGNATURE_LEN + SLH_DSA_SIGNATURE_LEN + ED25519_SIGNATURE_LEN;
 /// Length of a serialized [`HybridPublic`].
 pub const PUBLIC_KEY_LEN: usize = ENCRYPT_PUBLIC_LEN + SIGN_PUBLIC_LEN;
 /// Length of [`HybridPublic::attestation_binding`].
@@ -225,6 +241,12 @@ impl HybridPair {
 		let ml_kem_z = derive_secret(master_seed, ML_KEM_Z_DERIVE_PATH)?;
 		let x25519 = derive_secret(master_seed, X25519_DERIVE_PATH)?;
 		let ml_dsa_xi = derive_secret(master_seed, ML_DSA_XI_DERIVE_PATH)?;
+		let slh_dsa_secret_seed =
+			derive_secret(master_seed, SLH_DSA_SECRET_SEED_DERIVE_PATH)?;
+		let slh_dsa_secret_prf =
+			derive_secret(master_seed, SLH_DSA_SECRET_PRF_DERIVE_PATH)?;
+		let slh_dsa_public_seed =
+			derive_secret(master_seed, SLH_DSA_PUBLIC_SEED_DERIVE_PATH)?;
 		let ed25519 = derive_secret(master_seed, ED25519_DERIVE_PATH)?;
 		let aes_gcm_256 = derive_secret(master_seed, AES_GCM_256_PATH)?;
 
@@ -232,7 +254,15 @@ impl HybridPair {
 			encrypt_private: HybridEncryptPair::from_seeds(
 				&ml_kem_d, &ml_kem_z, &x25519,
 			),
-			sign_private: HybridSignPair::from_seeds(&ml_dsa_xi, &ed25519),
+			sign_private: HybridSignPair::from_seeds(
+				&ml_dsa_xi,
+				&SlhDsaSeeds {
+					secret_seed: &slh_dsa_secret_seed,
+					secret_prf: &slh_dsa_secret_prf,
+					public_seed: &slh_dsa_public_seed,
+				},
+				&ed25519,
+			),
 			master_seed: master_seed.clone(),
 			aes_gcm_256_secret: AesGcm256Secret::from_bytes(&aes_gcm_256),
 		})
@@ -274,8 +304,9 @@ impl HybridPair {
 		self.encrypt_private.decrypt(serialized_envelope)
 	}
 
-	/// Sign the message with ML-DSA-87 and Ed25519 and return
-	/// `ml_dsa_87_signature||ed25519_signature`.
+	/// Sign the message with ML-DSA-87, SLH-DSA-SHA2-256s and Ed25519 and
+	/// return
+	/// `ml_dsa_87_signature||slh_dsa_sha2_256s_signature||ed25519_signature`.
 	///
 	/// # Errors
 	///
@@ -357,7 +388,7 @@ impl HybridPair {
 }
 
 /// Hybrid public key: an ML-KEM-1024 + X25519 encryption key and an
-/// ML-DSA-87 + Ed25519 verifying key.
+/// ML-DSA-87 + SLH-DSA-SHA2-256s + Ed25519 verifying key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HybridPublic {
 	encrypt_public: HybridEncryptPublic,
@@ -374,8 +405,8 @@ impl HybridPublic {
 		self.encrypt_public.encrypt(message)
 	}
 
-	/// Verify a hybrid `signature` over `message` against this key: both its
-	/// ML-DSA-87 and its Ed25519 half must verify.
+	/// Verify a hybrid `signature` over `message` against this key: its
+	/// ML-DSA-87, SLH-DSA-SHA2-256s and Ed25519 parts must all verify.
 	///
 	/// # Errors
 	///
@@ -390,7 +421,7 @@ impl HybridPublic {
 	}
 
 	/// Serialize as
-	/// `ml_kem_public||x25519_public||ml_dsa_public||ed25519_public`.
+	/// `ml_kem_public||x25519_public||ml_dsa_public||slh_dsa_public||ed25519_public`.
 	#[must_use]
 	pub fn to_bytes(&self) -> Vec<u8> {
 		let mut bytes = Vec::with_capacity(PUBLIC_KEY_LEN);
@@ -406,17 +437,25 @@ impl HybridPublic {
 	}
 
 	/// Each component public key, in serialization order: ML-KEM-1024,
-	/// X25519, ML-DSA-87 and Ed25519.
+	/// X25519, ML-DSA-87, SLH-DSA-SHA2-256s and Ed25519.
 	#[must_use]
-	pub fn component_public_keys(&self) -> [Vec<u8>; 4] {
+	pub fn component_public_keys(&self) -> [Vec<u8>; 5] {
 		let encrypt = self.encrypt_public.to_bytes();
 		let sign = self.sign_public.to_bytes();
 		let (ml_kem, x25519) = encrypt.split_at(ML_KEM_PUBLIC_LEN);
-		let (ml_dsa, ed25519) = sign.split_at(ML_DSA_PUBLIC_LEN);
-		[ml_kem.to_vec(), x25519.to_vec(), ml_dsa.to_vec(), ed25519.to_vec()]
+		let (ml_dsa, rest) = sign.split_at(ML_DSA_PUBLIC_LEN);
+		let (slh_dsa, ed25519) = rest.split_at(SLH_DSA_PUBLIC_LEN);
+		[
+			ml_kem.to_vec(),
+			x25519.to_vec(),
+			ml_dsa.to_vec(),
+			slh_dsa.to_vec(),
+			ed25519.to_vec(),
+		]
 	}
 
-	/// Serialize the signing half, `ml_dsa_public||ed25519_public`.
+	/// Serialize the signing half,
+	/// `ml_dsa_public||slh_dsa_public||ed25519_public`.
 	#[must_use]
 	pub fn signing_public_key_bytes(&self) -> Box<[u8]> {
 		self.sign_public.to_bytes().into_boxed_slice()
@@ -435,7 +474,7 @@ impl HybridPublic {
 	}
 
 	/// Deserialize from
-	/// `ml_kem_public||x25519_public||ml_dsa_public||ed25519_public`.
+	/// `ml_kem_public||x25519_public||ml_dsa_public||slh_dsa_public||ed25519_public`.
 	///
 	/// # Errors
 	///

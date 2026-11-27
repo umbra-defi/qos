@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/umbra-defi/qos/compare/v0.20.0...v0.21.0) - 2026-11-27
+
+### Breaking
+- A hybrid signature is ML-DSA-87 || SLH-DSA-SHA2-256s || Ed25519 (34483 bytes) and verifies only
+  when all three parts do; the signing domain is
+  `qos_hybrid_ml_dsa_87_slh_dsa_sha2_256s_ed25519_v1`. A hybrid public key gains the 64-byte
+  SLH-DSA key (4288 bytes). The SLH-DSA seeds derive from the same 32-byte master seed, so seed
+  files and Shamir shares keep their shape, but every public key, attestation binding, member
+  digest and manifest hash changes: a 0.21 client cannot verify a 0.20 genesis or approval.
+- `HybridSignPair::from_seeds` takes the SLH-DSA seeds as `SlhDsaSeeds`, and
+  `HybridPublic::component_public_keys` returns five keys, SLH-DSA fourth.
+
 ## [0.20.0](https://github.com/umbra-defi/qos/compare/v0.19.0...v0.20.0) - 2026-11-25
 
 ### Breaking

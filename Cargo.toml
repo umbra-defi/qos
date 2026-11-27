@@ -53,7 +53,7 @@ resolver = "2"
 
 [workspace.package]
 rust-version = "1.97"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -78,6 +78,7 @@ chunked_transfer = { version = "1.5.0", default-features = false }
 etherparse = { version = "0.20.1", default-features = false }
 fips203 = { version = "0.4.3", default-features = false }
 fips204 = { version = "0.4.6", default-features = false }
+fips205 = { version = "0.5.0", default-features = false }
 ed25519-dalek = { version = "2.2.0", default-features = false }
 futures = { version = "0.3.30" }
 der = { version = "0.7", default-features = false }
@@ -115,18 +116,18 @@ zeroize = { version = "1.8", default-features = false }
 # Internal workspace dependencies
 integration = { path = "src/integration" }
 qos_host = { path = "src/qos_host", default-features = false }
-qos_attestation = { path = "src/qos_attestation", package = "umbra_qos_attestation", version = "0.20.0", default-features = false }
-qos_client = { path = "src/qos_client", package = "umbra_qos_client", version = "0.20.0", default-features = false }
-qos_core = { path = "src/qos_core", package = "umbra_qos_core", version = "0.20.0", default-features = false }
-qos_crypto = { path = "src/qos_crypto", package = "umbra_qos_crypto", version = "0.20.0", default-features = false }
-qos_hex = { path = "src/qos_hex", package = "umbra_qos_hex", version = "0.20.0", default-features = false }
-qos_json = { path = "src/qos_json", package = "umbra_qos_json", version = "0.20.0" }
-qos_net = { path = "src/qos_net", package = "umbra_qos_net", version = "0.20.0", default-features = false }
+qos_attestation = { path = "src/qos_attestation", package = "umbra_qos_attestation", version = "0.21.0", default-features = false }
+qos_client = { path = "src/qos_client", package = "umbra_qos_client", version = "0.21.0", default-features = false }
+qos_core = { path = "src/qos_core", package = "umbra_qos_core", version = "0.21.0", default-features = false }
+qos_crypto = { path = "src/qos_crypto", package = "umbra_qos_crypto", version = "0.21.0", default-features = false }
+qos_hex = { path = "src/qos_hex", package = "umbra_qos_hex", version = "0.21.0", default-features = false }
+qos_json = { path = "src/qos_json", package = "umbra_qos_json", version = "0.21.0" }
+qos_net = { path = "src/qos_net", package = "umbra_qos_net", version = "0.21.0", default-features = false }
 qos_test_harness = { path = "src/qos_test_harness", version = "0.14.1" }
-qos_nsm = { path = "src/qos_nsm", package = "umbra_qos_nsm", version = "0.20.0", default-features = false }
-qos_hybrid = { path = "src/qos_hybrid", package = "umbra_qos_hybrid", version = "0.20.0" }
-qos_nested_shamir = { path = "src/qos_nested_shamir", package = "umbra_qos_nested_shamir", version = "0.20.0" }
-qos_test_primitives = { path = "src/qos_test_primitives", package = "umbra_qos_test_primitives", version = "0.20.0" }
+qos_nsm = { path = "src/qos_nsm", package = "umbra_qos_nsm", version = "0.21.0", default-features = false }
+qos_hybrid = { path = "src/qos_hybrid", package = "umbra_qos_hybrid", version = "0.21.0" }
+qos_nested_shamir = { path = "src/qos_nested_shamir", package = "umbra_qos_nested_shamir", version = "0.21.0" }
+qos_test_primitives = { path = "src/qos_test_primitives", package = "umbra_qos_test_primitives", version = "0.21.0" }
 
 # used for pivot_download integration/example only
 url = { version = "2.5.7", default-features = false }
@@ -136,6 +137,12 @@ url = { version = "2.5.7", default-features = false }
 opt-level = 3
 
 [profile.dev.package.blake2]
+opt-level = 3
+
+[profile.dev.package.fips205]
+opt-level = 3
+
+[profile.dev.package.sha2]
 opt-level = 3
 
 # custom profile for qos_bridge/egress so we can abort in case of failures in any thread if using egress

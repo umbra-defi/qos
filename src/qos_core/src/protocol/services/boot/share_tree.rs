@@ -9,7 +9,7 @@
 //! [`ShareGroup`]s whose members carry their full hybrid keys, because each holder's shard is
 //! sealed to its key. A manifest names only [`MemberDigest`]s: an alias and the two digests of the
 //! key, as [`member_digests`] computes them, so it commits to who holds a shard without carrying
-//! 4224 bytes per member. Whoever posts a shard presents the full key, and its digests must match
+//! 4288 bytes per member. Whoever posts a shard presents the full key, and its digests must match
 //! a holder of the tree.
 //!
 //! [`GenesisSet`]: crate::protocol::services::genesis::GenesisSet
@@ -32,7 +32,8 @@ use crate::protocol::{
 pub const HOLDER_RECEIVING_KEY_DOMAIN: &[u8] =
 	b"qos/share-holder/receiving-key/v1";
 
-/// The domain a holder's signing key (ML-DSA-87 + Ed25519) is digested under.
+/// The domain a holder's signing key (ML-DSA-87 + SLH-DSA-SHA2-256s + Ed25519) is digested
+/// under.
 pub const HOLDER_SIGNING_KEY_DOMAIN: &[u8] = b"qos/share-holder/signing-key/v1";
 
 /// A threshold group of a genesis or reshare tree: one child of its parent, satisfied once
@@ -127,7 +128,7 @@ pub struct ShareHolderGroup {
 }
 
 /// The receiving and signing key digests of a hybrid public key: each half, ML-KEM-1024 + X25519
-/// then ML-DSA-87 + Ed25519, as SHA3-384 over its domain and the half, each preceded by its length
+/// then ML-DSA-87 + SLH-DSA-SHA2-256s + Ed25519, as SHA3-384 over its domain and the half, each preceded by its length
 /// as an 8-byte big-endian integer.
 ///
 /// # Errors

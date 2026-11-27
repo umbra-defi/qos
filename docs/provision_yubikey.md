@@ -3,8 +3,9 @@
 This playbook covers provisioning a YubiKey as a manifest set or share set member.
 
 A member key is a post-quantum hybrid key (ML-KEM-1024 + X25519 for encryption,
-ML-DSA-87 + Ed25519 for signing). YubiKey PIV slots cannot hold these keys, so
-the key is derived instead of stored: its 32-byte master seed is
+ML-DSA-87 + SLH-DSA-SHA2-256s + Ed25519 for signing). YubiKey PIV slots cannot
+hold these keys, so the key is derived instead of stored: its 32-byte master
+seed is
 
 ```text
 HKDF-SHA512(salt, response || Argon2id(passphrase, salt),
